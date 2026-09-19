@@ -17,7 +17,7 @@ if(MINGW)
 endif()
 
 # ---- 通用: sqlite3 源码 (复用工作区已有版本) ----
-set(SQLITE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../stock_analyzer/sqlite3.c)
+set(SQLITE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3/sqlite3.c)
 set_source_files_properties(${SQLITE_SRC} PROPERTIES COMPILE_OPTIONS "-w")
 
 # ---- Lua 5.4 静态库 (策略引擎) ----
@@ -32,7 +32,7 @@ add_executable(engine_test
     src/engine.cpp
     ${SQLITE_SRC}
 )
-target_include_directories(engine_test PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../stock_analyzer)
+target_include_directories(engine_test PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)
 if(WIN32)
     target_link_libraries(engine_test PRIVATE )
 else()
@@ -46,7 +46,7 @@ add_executable(bt_test
     src/backtest.cpp
     ${SQLITE_SRC}
 )
-target_include_directories(bt_test PRIVATE src third_party/lua ${CMAKE_CURRENT_SOURCE_DIR}/../stock_analyzer)
+target_include_directories(bt_test PRIVATE src third_party/lua ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)
 target_link_libraries(bt_test PRIVATE lua54)
 if(NOT WIN32)
     target_link_libraries(bt_test PRIVATE pthread dl)
@@ -66,7 +66,7 @@ if(Qt5_FOUND)
         src/klinechart.cpp
         ${SQLITE_SRC}
     )
-    target_include_directories(stock_gui PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../stock_analyzer)
+    target_include_directories(stock_gui PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)
     target_link_libraries(stock_gui PRIVATE Qt5::Widgets Qt5::Network)
     target_link_libraries(stock_gui PRIVATE lua54)
     # 静态 Qt: 链接 Windows 平台插件(内含 Q_IMPORT_PLUGIN 自动导入)
