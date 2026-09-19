@@ -2,6 +2,7 @@
 build/
 build-mingw/
 build-static/
+build_release_x64/
 package/
 *.o
 *.a
