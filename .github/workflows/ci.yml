@@ -1,0 +1,37 @@
+# stock_gui 自动化交叉编译 (Linux/WSL -> Windows x86-64, Qt5 mingw)
+# 由本机的 Gitea 自托管 runner 执行; 需要已安装:
+#   * x86_64-w64-mingw32 交叉编译器 (cc-toolchain/bin)
+#   * Qt5 安装 (cc-toolchain/qtwin)
+#   * cmake (见 build.sh, 优先 PATH, 其次 ~/.local/bin/cmake)
+name: Cross-compile stock_gui
+
+on:
+  push:
+    branches: [ main, master ]
+  tags:
+    - 'v*'
+  workflow_dispatch:
+
+jobs:
+  cross-build-windows:
+    name: Windows x86-64 (Qt5 dynamic)
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 设置工具链 PATH
+        run: |
+          export PATH="/home/srdev/devdisk/work/cc-toolchain/bin:/usr/bin:/bin:/home/srdev/devdisk/work/cc-toolchain/mingw64/usr/bin:$PATH"
+          echo "PATH=$PATH" | tee -a "$GITHUB_ENV"
+
+      - name: 交叉编译
+        run: bash ./build.sh
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock_gui-win64
+          path: |
+            build_release_x64/*.exe
+          if-no-files-found: error
