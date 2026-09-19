@@ -23,9 +23,10 @@ jobs:
       - name: 从 Gitea 克隆源码
         run: |
           CREDS="$(grep -m1 '^GITEA_TOKEN=' "${{ env.CREDS_FILE }}" | cut -d= -f2)"
+          HOST="${GITEA_URL#*://}"
           unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
           export GIT_PROXY_COMMAND=""; export GIT_NO_PROXY="*"; export GIT_TERMINAL_PROMPT=0
-          git clone --depth 1 "http://${CREDS}@${GITEA_URL}/${GITEA_REPO}.git" .
+          git clone --depth 1 "http://${CREDS}@${HOST}/${GITEA_REPO}.git" .
           if [ ! -f build.sh ]; then echo "FATAL: repo not cloned"; exit 1; fi
       - name: 设置工具链 PATH
         run: |
