@@ -1,7 +1,12 @@
 # stock_gui 自动化交叉编译 (Linux/WSL -> Windows x86-64, Qt5 mingw)
-# 仅使用内联 bash 步骤, 依赖本机自托管 runner (name: wsl-srdev, label: self-hosted)
-# 不依赖任何外部 action, 可在无外网环境的实例上运行
+# 本机为 LAN 自托管 Gitea, 且 runner 不会自动 checkout, 故第一步显式从 Gitea 克隆源码。
+# token 取自本机 runner daemon 所用的凭据文件 (与本项目其它 workflow 约定一致)。
 name: Cross-compile stock_gui
+
+env:
+  GITEA_URL: http://10.168.1.242:3000
+  GITEA_REPO: srdev/stock_gui
+  CREDS_FILE: /home/srdev/devdisk/wch/.firmware/gitea.env
 
 on:
   push:
@@ -15,14 +20,19 @@ jobs:
     name: Windows x86-64 (Qt5 dynamic)
     runs-on: self-hosted
     steps:
+      - name: 从 Gitea 克隆源码
+        run: |
+          CREDS="$(grep -m1 '^GITEA_TOKEN=' "${{ env.CREDS_FILE }}" | cut -d= -f2)"
+          unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+          export GIT_PROXY_COMMAND=""; export GIT_NO_PROXY="*"; export GIT_TERMINAL_PROMPT=0
+          git clone --depth 1 "http://${CREDS}@${GITEA_URL}/${GITEA_REPO}.git" .
+          if [ ! -f build.sh ]; then echo "FATAL: repo not cloned"; exit 1; fi
       - name: 设置工具链 PATH
         run: |
           export PATH="/home/srdev/devdisk/work/cc-toolchain/bin:/usr/bin:/bin:/home/srdev/devdisk/work/cc-toolchain/mingw64/usr/bin:$PATH"
           echo "PATH=$PATH" | tee -a "$GITHUB_ENV"
-
       - name: 交叉编译
         run: bash ./build.sh
-
       - name: 打包产物 (tar + 校验和)
         run: |
           set -e
