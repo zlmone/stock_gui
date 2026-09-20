@@ -39,25 +39,35 @@ curl -u srdev:king2014 -O \
 
 | 文件 | 说明 |
 |---|---|
-| `stock_gui.exe` | GUI 主程序 |
+| `stock_gui.exe` | GUI 主程序（静态 Qt，约 37MB，零 DLL 依赖） |
 | `engine_test.exe` | 引擎命令行工具 |
 | `bt_test.exe` | 策略回测工具 |
-| `Qt5Core/Gui/Network/Widgets.dll` | Qt5 运行期库（**已附带**） |
-| `platforms/qwindows.dll` | Qt5 Windows 平台插件 |
+| `strategies/` | 6 个内建策略脚本（.lua） |
+| `concept_map.csv` | 概念映射表 |
+| `industry_map.csv` | 行业映射表 |
+| `kline_latest.db` | 行情主库（约 316MB，含全市场 K 线） |
+| `valuation.db` | 估值库（PB/PE 分位，约 26MB） |
 | `start.bat` | 启动脚本 |
+| `使用说明.txt` | 使用说明 |
 
-**已附带全部运行期依赖**，解压即可运行，目标机器无需安装 Qt。
-（属于"动态链接 Qt5"构建；若需单文件零依赖的静态版，见下。）
+- 数据库/映射表随包附带，解包即可使用（exe 同目录查找，或设 `STOCK_DB_DIR` 指定其它位置）。
+- 已把整个 Qt5（Core/Gui/Widgets/Network）、Qt 平台插件及运行期库全部静态编译进 exe，
+  目标机器无需安装 Qt 或任何运行库。
+- 发布包较大主因是随包带了约 340MB 行情库；运行期自身零依赖。
 
 ## 四、本地自行构建
 
 ```bash
-./build.sh                                  # 交叉编译 -> build_release_x64/*.exe
-./scripts/deploy_win.sh build_release_x64   # 打包 -> stock_gui-win64.zip
+./build.sh                                  # 动态 Qt -> build_release_x64/*.exe
+./scripts/deploy_win.sh build_release_x64   # 打包（附 Qt DLL）
+
+USE_STATIC_QT=ON ./build.sh                 # 静态 Qt -> build_static_x64/*.exe（零依赖单文件）
+./scripts/deploy_win.sh build_static_x64    # 打包（附策略/数据库/映射表）
 ```
+静态构建需宿主机已交叉编译安装静态 Qt（`/home/srdev/devdisk/qt-static`）；
+部署数据源目录可用 `DEPLOY_DATA_DIR=…` 覆盖。
 
 ## 五、关于静态版本
 
-当前发布包是**动态链接 Qt5**（约 12MB，需随带上面那些 DLL，已打包在内）。
-README 里提到的"纯静态零依赖"版需要宿主机上有静态 Qt 安装
-（`/home/srdev/qt-static/...`），目前 runner 上未安装，所以走的是动态版。
+当前发布包即为**静态 Qt 零依赖**版。构建前提是宿主机已交叉编译静态 Qt，
+静态 Qt 安装于 `/home/srdev/devdisk/qt-static`；CI runner 与本机同一宿主机，故可访问。

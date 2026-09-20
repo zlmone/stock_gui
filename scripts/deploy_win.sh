@@ -9,6 +9,9 @@
 #     MODE        auto|dynamic|static, 默认 auto (按 BUILD_DIR 名自动判定)
 set -euo pipefail
 
+# 仓库根目录 (deploy_win.sh 位于 scripts/ 下, 取父目录)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 BUILD_DIR="${1:-build_release_x64}"
 QTWIN="/home/srdev/devdisk/work/cc-toolchain/qtwin"
 ZIP_BASENAME="${2:-stock_gui-win64}"
@@ -44,6 +47,27 @@ else
   cp "$QTWIN/plugins/platforms/qwindows.dll" "$DEST/platforms/" 2>/dev/null || true
 fi
 
+# 静态构建: 附带应用数据文件 (策略脚本 + 映射表 + 数据库 + 使用说明)
+#   策略脚本: 来自仓库 scripts/strategies (source of truth, CI 保证存在)
+#   数据库/映射表/说明: 来自数据源目录 DEPLOY_DATA_DIR (默认旧发布包所在目录)
+if [ "$MODE" = "static" ]; then
+  DATA_DIR="${DEPLOY_DATA_DIR:-/home/srdev/devdisk/work/stock_gui_win32/stock_gui_win32}"
+  echo "[deploy] 复制策略脚本 (来自仓库 $SCRIPT_DIR/strategies)"
+  if [ -d "$SCRIPT_DIR/strategies" ]; then
+    cp -r "$SCRIPT_DIR/strategies" "$DEST/" 2>/dev/null || true
+  else
+    echo "[deploy] WARN: 仓库无 strategies 目录" >&2
+  fi
+  if [ -d "$DATA_DIR" ]; then
+    echo "[deploy] 复制数据库/映射表/说明 (来自 $DATA_DIR)"
+    for f in concept_map.csv industry_map.csv kline_latest.db valuation.db "使用说明.txt"; do
+      cp "$DATA_DIR/$f" "$DEST/" 2>/dev/null || echo "[deploy] WARN: 缺失 $f"
+    done
+  else
+    echo "[deploy] WARN: 数据目录 $DATA_DIR 不存在, 跳过数据库/映射表/说明" >&2
+  fi
+fi
+
 cat > "$DEST/start.bat" <<'BAT'
 @echo off
 title 股票体检 stock_gui
@@ -65,6 +89,10 @@ cat > "$DEST/README.txt" <<'TXT'
 说明: 已把整个 Qt5 (Core/Gui/Widgets/Network)、Qt 平台插件及运行期库
       全部静态编译进 exe, 无需附带任何 DLL。复制到其它 Windows 电脑
       解包即可运行。
+
+附带数据: strategies/ (策略脚本)、concept_map.csv / industry_map.csv
+          (行业/概念映射)、kline_latest.db / valuation.db (行情/估值库),
+          解包即可直接使用。
 TXT
 else
 cat > "$DEST/README.txt" <<'TXT'
@@ -83,8 +111,8 @@ cat > "$DEST/README.txt" <<'TXT'
 TXT
 fi
 
-echo "[deploy] 打包"
-zip -r -q "$ZIP_BASENAME.zip" "$DEST"
+echo "[deploy] 打包 (max 压缩)"
+zip -r -q -9 "$ZIP_BASENAME.zip" "$DEST"
 rm -rf "$DEST"
 
 echo "[deploy] DONE -> $ZIP_BASENAME.zip"
