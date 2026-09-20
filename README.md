@@ -65,13 +65,18 @@ cmake -DCMAKE_TOOLCHAIN_FILE=../cross-mingw32.cmake ..
 make -j4    # 产物需附带 Qt5*.dll + platforms/qwindows.dll 分发
 ```
 
-### B. 静态版（i686-posix + 静态 Qt 5.15.18）★推荐
+### B. 静态版（x86-64 静态 Qt 5.15.0）★推荐
 ```bash
-cmake -DCMAKE_TOOLCHAIN_FILE=../cross-mingw32-static.cmake ..
-make -j4    # 产物是零依赖单文件 exe（约35MB），拷走即用
+USE_STATIC_QT=ON ./build.sh
+# 产物: build_static_x64/  (stock_gui.exe / engine_test.exe / bt_test.exe)
 ```
-要点：静态版必须用 posix 线程模型编译器（g++-posix）；
-Qt 静态包位于 /home/srdev/qt-static/5.15.18-static/mingw810_32。
+要点：产物为零依赖单文件 exe（约 37MB），把整个 Qt5（Core/Gui/Network/Widgets）、
+Qt 平台插件(qwindows) 及运行期库全部静态编进 exe，拷贝即用。
+静态 Qt 交叉编译并安装于 `/home/srdev/devdisk/qt-static`，
+构建工具链为 `cross-cc-toolchain-x64.cmake`（find_package(Qt5) 定位到该目录）。
+```
+> 注：旧的 32 位静态工具链 `cross-mingw32-static.cmake`（指向
+> /home/srdev/qt-static/5.15.18-static/mingw810_32）当前静态 Qt 尚未重建，暂不可用。
 
 ### wine 冒烟测试
 ```bash

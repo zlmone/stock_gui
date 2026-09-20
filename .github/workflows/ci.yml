@@ -32,8 +32,8 @@ jobs:
         run: |
           export PATH="/home/srdev/devdisk/work/cc-toolchain/bin:/usr/bin:/bin:/home/srdev/devdisk/work/cc-toolchain/mingw64/usr/bin:$PATH"
           echo "PATH=$PATH" | tee -a "$GITHUB_ENV"
-      - name: 交叉编译
-        run: bash ./build.sh
+      - name: 交叉编译 (静态 Qt, 单文件零依赖)
+        run: USE_STATIC_QT=ON bash ./build.sh
       - name: 打包并上传到 Gitea Release
         run: |
           set -e
@@ -42,5 +42,5 @@ jobs:
           STAMP="$(date +%Y%m%d-%H%M)"
           BASENAME="stock_gui_${SHA}_${STAMP}"
           chmod +x scripts/deploy_win.sh scripts/upload_release.sh
-          ./scripts/deploy_win.sh build_release_x64 "$BASENAME"
+          ./scripts/deploy_win.sh build_static_x64 "$BASENAME" static
           PKG_VERSION="$SHA" ./scripts/upload_release.sh "${BASENAME}.zip"

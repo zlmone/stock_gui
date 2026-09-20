@@ -3,6 +3,8 @@ build/
 build-mingw/
 build-static/
 build_release_x64/
+build_static_x64/
+build_verify_x64/
 package/
 *.o
 *.a

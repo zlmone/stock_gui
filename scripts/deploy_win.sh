@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# 打包可部署的 Windows x86-64 软件包 (Qt5 动态, 附带全部运行期 DLL)
+# 打包可部署的 Windows x86-64 软件包
+#   动态 Qt (默认): 附带全部 Qt5 运行期 DLL + platforms/qwindows.dll
+#   静态 Qt (mode=static): 产物为单文件零依赖 exe, 不附带任何 Qt DLL
 # 用法:
-#   ./scripts/deploy_win.sh [BUILD_DIR] [ZIP_BASENAME]
-#     BUILD_DIR        编译输出目录, 默认 build_release_x64
-#     ZIP_BASENAME     输出 zip 前缀, 默认 stock_gui-win64 (CI 会带 commit+时间戳)
+#   ./scripts/deploy_win.sh [BUILD_DIR] [ZIP_BASENAME] [MODE]
+#     BUILD_DIR     编译输出目录, 默认 build_release_x64
+#     ZIP_BASENAME  输出 zip 前缀, 默认 stock_gui-win64 (CI 会带 commit+时间戳)
+#     MODE        auto|dynamic|static, 默认 auto (按 BUILD_DIR 名自动判定)
 set -euo pipefail
 
 BUILD_DIR="${1:-build_release_x64}"
 QTWIN="/home/srdev/devdisk/work/cc-toolchain/qtwin"
 ZIP_BASENAME="${2:-stock_gui-win64}"
-
+MODE="${3:-auto}"
+case "$MODE" in
+  auto) case "${BUILD_DIR#*/}" in *static*) MODE=static;; *) MODE=dynamic;; esac ;;
+esac
 if [ ! -f "$BUILD_DIR/stock_gui.exe" ]; then
   echo "[deploy] ERROR: 未找到 $BUILD_DIR/stock_gui.exe, 请先 ./build.sh" >&2
   exit 1
@@ -17,18 +23,26 @@ fi
 
 DEST="${ZIP_BASENAME%-zip}"   # 解压后文件夹名, 去掉末尾 -zip (若有)
 [ "$DEST" = "$ZIP_BASENAME" ] && DEST="stock_gui-win64"
-rm -rf "$DEST"; mkdir -p "$DEST/platforms"
+rm -rf "$DEST"
+if [ "$MODE" = "static" ]; then
+  mkdir -p "$DEST"
+else
+  mkdir -p "$DEST/platforms"
+fi
 
 echo "[deploy] 复制可执行文件"
 cp "$BUILD_DIR/stock_gui.exe" "$BUILD_DIR/engine_test.exe" "$BUILD_DIR/bt_test.exe" "$DEST/" 2>/dev/null || true
 
-echo "[deploy] 复制 Qt5 运行期 DLL (exe 实际引用)"
-for d in Qt5Core Qt5Gui Qt5Network Qt5Widgets; do
-  if [ -f "$QTWIN/bin/$d.dll" ]; then cp "$QTWIN/bin/$d.dll" "$DEST/"; else echo "[deploy] WARN: 缺失 $d.dll"; fi
-done
-
-echo "[deploy] 复制 Qt 平台插件 (静态嵌入, 附带无妨)"
-cp "$QTWIN/plugins/platforms/qwindows.dll" "$DEST/platforms/" 2>/dev/null || true
+if [ "$MODE" = "static" ]; then
+  echo "[deploy] 静态构建: 不附带 Qt DLL / 平台插件 (已静态嵌入 exe)"
+else
+  echo "[deploy] 复制 Qt5 运行期 DLL (exe 实际引用)"
+  for d in Qt5Core Qt5Gui Qt5Network Qt5Widgets; do
+    if [ -f "$QTWIN/bin/$d.dll" ]; then cp "$QTWIN/bin/$d.dll" "$DEST/"; else echo "[deploy] WARN: 缺失 $d.dll"; fi
+  done
+  echo "[deploy] 复制 Qt 平台插件 (若存在)"
+  cp "$QTWIN/plugins/platforms/qwindows.dll" "$DEST/platforms/" 2>/dev/null || true
+fi
 
 cat > "$DEST/start.bat" <<'BAT'
 @echo off
@@ -37,6 +51,22 @@ echo 正在启动 stock_gui ...
 start "" stock_gui.exe
 BAT
 
+if [ "$MODE" = "static" ]; then
+cat > "$DEST/README.txt" <<'TXT'
+股票体检工具 (stock_gui) - Windows x86-64 部署包 (静态构建)
+----------------------------------------------------------
+运行方法: 双击 start.bat, 或直接双击 stock_gui.exe。
+
+包含文件:
+  stock_gui.exe        GUI 主程序 (静态 Qt, 单文件零依赖)
+  engine_test.exe      引擎命令行工具
+  bt_test.exe          策略回测工具
+
+说明: 已把整个 Qt5 (Core/Gui/Widgets/Network)、Qt 平台插件及运行期库
+      全部静态编译进 exe, 无需附带任何 DLL。复制到其它 Windows 电脑
+      解包即可运行。
+TXT
+else
 cat > "$DEST/README.txt" <<'TXT'
 股票体检工具 (stock_gui) - Windows x86-64 部署包
 ------------------------------------------------
@@ -51,6 +81,7 @@ cat > "$DEST/README.txt" <<'TXT'
 
 说明: 已附带全部运行期依赖, 可直接复制到其它 Windows 电脑解包运行。
 TXT
+fi
 
 echo "[deploy] 打包"
 zip -r -q "$ZIP_BASENAME.zip" "$DEST"

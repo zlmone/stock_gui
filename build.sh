@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 自动化交叉编译: Linux/WSL -> Windows x86-64 (Qt5 mingw)
 # 用法:
-#   ./build.sh                 # release 构建
-#   BUILD_TYPE=debug ./build.sh
-#   ./build.sh -- -DFOO=bar    # 额外传给 cmake 的参数
+#   ./build.sh                 # 动态 Qt release 构建 (产物附 Qt DLL 与 platforms/)
+#   BUILD_TYPE=debug ./build.sh # 动态 Qt debug 构建
+#   USE_STATIC_QT=ON ./build.sh # 静态 Qt 构建 -> 单文件零依赖 exe (约 38MB, 随包无需 Qt DLL)
+#   ./build.sh -- -DFOO=bar     # 额外传给 cmake 的参数 (静态构建建议: -- -DQT_INSTALL_PREFIX=/path)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +33,16 @@ echo "[build] type  : $BUILD_TYPE"
 CMAKE_EXTRA_ARGS=()
 if [ $# -gt 0 ] && [ "$1" = "--" ]; then shift; CMAKE_EXTRA_ARGS=("$@"); fi
 
+# 静态 Qt 构建: 指定静态 Qt 安装目录并启用静态链接 (-static)
+if [ "${USE_STATIC_QT:-OFF}" = "ON" ]; then
+  QT_STATIC_PREFIX="${QT_STATIC_PREFIX:-/home/srdev/devdisk/qt-static}"
+  CMAKE_EXTRA_ARGS+=(-DUSE_STATIC_QT=ON -DQT_INSTALL_PREFIX="$QT_STATIC_PREFIX")
+fi
+
 BUILD_DIR="build_${BUILD_TYPE}_x64"
+if [ "${USE_STATIC_QT:-OFF}" = "ON" ]; then
+  BUILD_DIR="build_static_x64"
+fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
