@@ -1,6 +1,6 @@
-# stock_gui 自动化交叉编译 (Linux/WSL -> Windows x86-64, Qt5 mingw)
-# 本机为 LAN 自托管 Gitea, 且 runner 不会自动 checkout, 故第一步显式从 Gitea 克隆源码。
-# token 取自本机 runner daemon 所用的凭据文件 (与本项目其它 workflow 约定一致)。
+# stock_gui 自动化交叉编译 + 打包发布 (Linux/WSL -> Windows x86-64, Qt5)
+# 本机为 LAN 自托管 Gitea, runner 不自动 checkout, 故第一步显式克隆源码。
+# token 取自 runner daemon 所用凭据文件 (与其它项目 workflow 约定一致)。
 name: Cross-compile stock_gui
 
 env:
@@ -17,7 +17,7 @@ on:
 
 jobs:
   cross-build-windows:
-    name: Windows x86-64 (Qt5 dynamic)
+    name: Windows x86-64 打包发布
     runs-on: self-hosted
     steps:
       - name: 从 Gitea 克隆源码
@@ -34,12 +34,13 @@ jobs:
           echo "PATH=$PATH" | tee -a "$GITHUB_ENV"
       - name: 交叉编译
         run: bash ./build.sh
-      - name: 打包产物 (tar + 校验和)
+      - name: 打包并上传到 Gitea Release
         run: |
           set -e
-          cd build_release_x64
-          tar czf stock_gui-win64.tar.gz *.exe
-          echo "--- 产物清单 ---"
-          ls -la stock_gui-win64.tar.gz
-          echo "--- 校验和 ---"
-          sha256sum *.exe
+          export GITEA_TOKEN="$(grep -m1 '^GITEA_TOKEN=' "${{ env.CREDS_FILE }}" | cut -d= -f2)"
+          SHA="$(git rev-parse --short HEAD || echo nogit)"
+          STAMP="$(date +%Y%m%d-%H%M)"
+          BASENAME="stock_gui_${SHA}_${STAMP}"
+          chmod +x scripts/deploy_win.sh scripts/upload_release.sh
+          ./scripts/deploy_win.sh build_release_x64 "$BASENAME"
+          PKG_VERSION="$SHA" ./scripts/upload_release.sh "${BASENAME}.zip"
