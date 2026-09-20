@@ -13,6 +13,8 @@ params = {
     { key="mean_diff_day",  label="MA初始天数", min=1, max=10,  step=1,  int=true,  value=3 },
     { key="score_threshold",label="RSRS阈值", min=0, max=3,  step=0.05,  value=0.7 },
     { key="stop_loss",      label="止损线%", min=0, max=60,  step=1,  value=20 },
+    { key="commission",     label="佣金率/单边", min=0, max=0.05,  step=0.0001, value=0.001 },
+    { key="slippage",       label="滑点率/单边", min=0, max=0.05,  step=0.0001, value=0.001 }
 }
 P = {}
 for _, v in ipairs(params) do P[v.key] = v.value end

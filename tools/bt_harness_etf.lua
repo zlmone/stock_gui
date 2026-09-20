@@ -2,6 +2,7 @@
 -- bt_harness_etf.lua -- 多目标 ETF 动量轮动回测引擎
 -- 用法: ./runlua bt_harness_etf.lua <策略.lua> [ETF1.csv] [ETF2.csv] [ETF3.csv] [指数.csv]
 -- 策略 on_bar(ctx) 返回 0(空仓)/1/2/3(持对应ETF); 引擎负责切仓 + 净值核算。
+-- 成本: 每次成交单边扣 佣金(commission) + 滑点(slippage); 默认各万10, 可用参数覆盖。
 -- 注: 本 Lua 构建单语句不支持逗号分隔的多个 locals; 表字段必须用逗号分隔。
 -- ============================================================
 local strat = arg[1]
@@ -32,7 +33,7 @@ local n=math.min(#c1,#c2,#c3,#ic)
 if n<3 then print("数据不足:", n); return end
 
 local maxBars=(arg[6] and tonumber(arg[6]) or 1e9)
-if n>maxBars then
+if maxBars>0 and n>maxBars then
     local s=n-maxBars
     local nc1={}; local nc2={}; local nc3={}; local nic={}; local nd={}
     for I=s+1,n do nc1[#nc1+1]=c1[I]; nc2[#nc2+1]=c2[I]; nc3[#nc3+1]=c3[I]; nic[#nic+1]=ic[I]; nd[#nd+1]=od1[I] end
@@ -43,8 +44,12 @@ end
 dofile(strat)
 local P={}
 if params then for _,v in ipairs(params) do P[v.key]=v.value end end
+P.commission=P.commission or 0.001
+P.slippage=P.slippage or 0.001
+if arg then for a=7,#arg do local k,v=arg[a]:match("^(.+)=(.+)$") if k then P[k]=tonumber(v) or v end end end
 
-local holding=0; local buy_price=0; local buy_i=0; local buy_date=""; local equity=1.0
+local holding=0; local buy_price=0; local buy_net=0; local buy_i=0; local buy_date=""; local equity=1.0
+local gross_equity=1.0
 local worst=0; local sum_gain=0; local sum_days=0; local wins=0; local trades={}
 local decided={}; local sig_arr={}
 for I=2,n do
@@ -53,32 +58,40 @@ for I=2,n do
     sig_arr[I]=tostring(SIGNAL or "")
     if target~=holding then
         if holding~=0 then
-            local gp=(ic[I]-buy_price)/buy_price*100
-            trades[#trades+1]={date=od1[I], sell_date=od1[I], buy_date=buy_date, etf=holding, buy_price=buy_price, sell_price=ic[I], days=I-buy_i, gain_pct=gp, reason=(target==0 and "择时" or "轮动")}
-            equity=equity*(1+gp/100)
+            local ps=ic[I]
+            local sell_net=ps*(1-P.slippage-P.commission)
+            local gp=(sell_net/buy_net-1)*100
+            trades[#trades+1]={date=od1[I], sell_date=od1[I], buy_date=buy_date, etf=holding, buy_price=buy_price, buy_net=buy_net, sell_price=ps, days=I-buy_i, gain_pct=gp, reason=(target==0 and "择时" or "轮动")}
+            equity=equity*(1+sell_net/buy_net-1)
+            gross_equity=gross_equity*(ps/buy_price-1+1)
             worst=(worst==0 or gp<worst) and gp or worst
             sum_gain=sum_gain+gp; sum_days=sum_days+(I-buy_i)
             if gp>0 then wins=wins+1 end
             holding=0
         end
-        if target~=0 then holding=target; buy_price=ic[I]; buy_i=I; buy_date=od1[I] end
+        if target~=0 then holding=target; buy_price=ic[I]; buy_net=ic[I]*(1+P.slippage+P.commission); buy_i=I; buy_date=od1[I] end
     end
     decided[I]=holding
 end
 if holding~=0 then
-    local gp=(ic[n]-buy_price)/buy_price*100
-    trades[#trades+1]={date=od1[n], sell_date=od1[n], buy_date=buy_date, etf=holding, buy_price=buy_price, sell_price=ic[n], days=n-buy_i, gain_pct=gp, reason="到期平仓"}
-    equity=equity*(1+gp/100)
-    worst=(worst==0 or gp<worst) and gp or worst
-    sum_gain=sum_gain+gp; sum_days=sum_days+(n-buy_i)
-    if gp>0 then wins=wins+1 end
+    local ps=ic[n]
+    local sell_net=ps*(1-P.slippage-P.commission)
+    local gp=(sell_net/buy_net-1)*100
+    trades[#trades+1]={date=od1[n], sell_date=od1[n], buy_date=buy_date, etf=holding, buy_price=buy_price, buy_net=buy_net, sell_price=ps, days=n-buy_i, gain_pct=gp, reason="到期平仓"}
+            equity=equity*(1+sell_net/buy_net-1)
+            gross_equity=gross_equity*(ps/buy_price-1+1)
+            worst=(worst==0 or gp<worst) and gp or worst
+            sum_gain=sum_gain+gp; sum_days=sum_days+(n-buy_i)
+            if gp>0 then wins=wins+1 end
 end
 
 local name=strat:gsub("^.*/","")
 print(string.format("== 策略 %-28s | 数据 %d 根 ==", strategy and strategy.name or name, n))
-print(string.format("  成交 %d 笔 | 胜率 %.0f%% | 总收益 %+.1f%% | 最差 %+.1f%% | 平均持有 %.1f日 | 均收益 %+.1f%%",
-    #trades, (#trades>0 and wins/#trades*100 or 0), (equity-1)*100, worst,
+print(string.format("  成交 %d 笔 | 胜率 %.0f%% | 净收益 %+.1f%% | 毛收益 %+.1f%% | 最差 %+.1f%% | 平均持有 %.1f日 | 均收益 %+.1f%%",
+    #trades, (#trades>0 and wins/#trades*100 or 0), (equity-1)*100, (gross_equity-1)*100, worst,
     (#trades>0 and sum_days/#trades or 0), (#trades>0 and sum_gain/#trades or 0)))
+print(string.format("  成本: 佣金 %.1f%%/单边 + 滑点 %.1f%%/单边 (毛-净=%+.1f%% | 换手 %d 次)",
+    P.commission*100, P.slippage*100, ((gross_equity-1)-(equity-1))*100, #trades))
 local show=(#trades<5) and #trades or 5
 for k=#trades-show+1,#trades do
     local t=trades[k]
