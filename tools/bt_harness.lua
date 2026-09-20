@@ -15,13 +15,16 @@ local function split(s)
 end
 
 -- 1) 读 CSV -> 1 索引 cd (收盘)/ vol (量)/ od (日期)
-local cd, vol, od = {}, {}, {}
+local cd, vol, od, hi, lo, op = {}, {}, {}, {}, {}, {}
 for line in io.open(csvPath, "r"):lines() do
     local f = split(line)
     if #f >= 6 then
         cd[#cd+1]  = tonumber(f[5])
         vol[#vol+1]= tonumber(f[6])
         od[#od+1]  = f[1]
+        hi[#hi+1]  = tonumber(f[3])
+        lo[#lo+1]  = tonumber(f[4])
+        op[#op+1]  = tonumber(f[2])
     end
 end
 if #cd < 2 then print("数据不足:", #cd); return end
@@ -49,6 +52,22 @@ end
 local ma5  = calcMA(5)
 local ma10 = calcMA(10)
 local ma20 = calcMA(20)
+local ma60 = calcMA(60)
+-- pos60: 近 60 日位置 (收盘在 60 日高低区间中的 %); <60 根时为 nil (与引擎一致)
+local pos60 = {}
+for I = 60, n do
+    local hi = cd[I]
+    local lo = cd[I]
+    for k = I - 59, I do local v = cd[k]; if v > hi then hi = v end; if v < lo then lo = v end end
+    pos60[I] = (hi > lo) and (cd[I] - lo) / (hi - lo) * 100 or 0.0
+end
+-- zt20: 近 20 根涨停天数 (单日涨幅 >= 9.8%)
+local zt20 = {}
+for I = 2, n do
+    local cnt = 0; local start = I - 19; if start < 2 then start = 2 end
+    for k = start, I do local pc = (cd[k] - cd[k-1]) / cd[k-1] * 100; if pc >= 9.8 then cnt = cnt + 1 end end
+    zt20[I] = cnt
+end
 
 -- 4) 载入策略 (定义 strategy/params/P/on_bar)
 dofile(strat)
@@ -77,7 +96,12 @@ for I=2, n do
     ctx.ma20 = ma20[I] > 0 and ma20[I] or nil
     ctx.ma5_prev  = (ma5[I-1]  > 0) and ma5[I-1]  or nil
     ctx.ma20_prev = (ma20[I-1] > 0) and ma20[I-1] or nil
-    ctx.close_arr, ctx.vol_arr, ctx.ma5_arr = cd, vol, ma5
+    ctx.close_arr, ctx.vol_arr, ctx.ma5_arr  = cd, vol, ma5
+    ctx.high_arr, ctx.low_arr, ctx.open_arr  = hi, lo, op
+    ctx.ma10_arr, ctx.ma20_arr, ctx.ma60_arr = ma10, ma20, ma60
+    ctx.pos60 = (I >= 60) and pos60[I] or nil
+    ctx.zt20 = zt20[I]
+    ctx.equity = equity
 
     local sig = call()
     if not holding and sig=="BUY" then
