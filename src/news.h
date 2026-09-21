@@ -36,6 +36,15 @@ std::vector<NewsQuery> defaultQueries();
 std::vector<NewsItem> parseFeed(const std::string& body, const std::string& source,
                                 const std::string& category = "");
 
+// 解析一份 JSON 格式的新闻列表 (财联社 / 华尔街见闻 / 东方财富 等国内源)
+//   与 parseFeed 同签名; 返回空=解析失败或无条目 (调用层自动跳过该源)
+std::vector<NewsItem> parseJsonFeed(const std::string& body, const std::string& source,
+                                    const std::string& category = "");
+
+// 自动判断 JSON({) 或 XML(<) 并分发解析 (GUI 层统一调用)
+std::vector<NewsItem> collectItems(const std::string& body, const std::string& source,
+                                   const std::string& category = "");
+
 // 按 link 去重 (同一链接保留发布时间最早的那条), 保持输入顺序
 std::vector<NewsItem> dedupItems(std::vector<NewsItem> items);
 

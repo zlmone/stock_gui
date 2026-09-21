@@ -2091,7 +2091,7 @@ void MainWindow::updateNews() {
                 .arg(QString::fromStdString(q.source)).arg(err));
             continue;
         }
-        auto items = parseFeed(std::string(convertToUtf8(body).constData(),
+        auto items = collectItems(std::string(convertToUtf8(body).constData(),
                                            convertToUtf8(body).size()),
                                q.source, q.category);
         if (!items.empty()) {

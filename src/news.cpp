@@ -3,7 +3,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctype.h>
 #include <ctime>
+#include <map>
 #include <set>
 #include <algorithm>
 #include <sqlite3.h>
@@ -45,6 +47,13 @@ std::vector<NewsQuery> defaultQueries() {
       d.url = "https://www.cnbc.com/id/100003114/device/rss/rss.html"; q.push_back(d); }
     { NewsQuery e; e.category = "国际"; e.lang = "en"; e.region = "US";
       e.url = "https://www.marketwatch.com/rss/topstories"; q.push_back(e); }
+    // 国内源兜底 (Google News 在国内常被墙; 财联社/华尔街见闻/东方财富 为国内 JSON 快讯源, 均本机验证可用)
+    { NewsQuery f; f.category = "国内"; f.source = "财联社"; f.lang = "zh-CN"; f.region = "CN";
+      f.url = "https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9"; q.push_back(f); }
+    { NewsQuery g; g.category = "宏观"; g.source = "华尔街见闻"; g.lang = "zh-CN"; g.region = "CN";
+      g.url = "https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=30"; q.push_back(g); }
+    { NewsQuery h; h.category = "国内"; h.source = "东方财富"; h.lang = "zh-CN"; h.region = "CN";
+      h.url = "https://np-listapi.eastmoney.com/comm/web/getNewsByColumns?client=web&biz=web_home_channel&column=350,35,466,467&order=1&needInteractData=0&page_index=1&page_size=30&req_trace=21e65da9-1234-4567-89ab-0123456789ab"; q.push_back(h); }
     return q;
 }
 
@@ -300,6 +309,178 @@ std::vector<NewsItem> dedupItems(std::vector<NewsItem> items) {
         out.push_back(it);
     }
     return out;
+}
+
+
+// ===================== 极简 JSON 解析器 (自包含, 无第三方依赖) =====================
+// 供国内 JSON 新闻源 (财联社/华尔街见闻/东方财富) 解析. 容错: 解析中断只返回已解析部分.
+struct JsonValue {
+    enum Type { Null, Bool, Num, Str, Arr, Obj } type = Null;
+    bool bval = false;
+    double num = 0;
+    std::string sval;
+    std::vector<JsonValue> arr;
+    std::map<std::string, JsonValue> obj;
+    const JsonValue* find(const std::string& k) const {
+        if (type != Obj) return nullptr;
+        auto it = obj.find(k);
+        return it == obj.end() ? nullptr : &it->second;
+    }
+};
+
+struct JsonParser {
+    const char* p; const char* end;
+    JsonParser(const std::string& s): p(s.c_str()), end(p + (int)s.size()) {}
+    void skipWs(){ while(p<end && (*p==' '||*p=='\t'||*p=='\n'||*p=='\r')) p++; }
+    bool ok(){ skipWs(); return p>=end; }
+    bool value(JsonValue& v){
+        skipWs();
+        if(p>=end) return false;
+        char c=*p;
+        if(c=='{') return object(v);
+        if(c=='[') return array(v);
+        if(c=='"'){ v.type=JsonValue::Str; v.sval=lexString(); return true; }
+        if(c=='t'||c=='f') return boolean(v);
+        if(c=='n') return nullv(v);
+        return number(v);
+    }
+    bool object(JsonValue& v){
+        v.type=JsonValue::Obj; p++;
+        skipWs();
+        if(p<end && *p=='}'){ p++; return true; }
+        while(p<end){
+            skipWs();
+            if(p>=end || *p!='"') return false;
+            std::string key=lexString();
+            skipWs();
+            if(p>=end || *p!=':') return false;
+            p++;
+            JsonValue val; if(!value(val)) return false;
+            v.obj.emplace(std::move(key), std::move(val));
+            skipWs();
+            if(p<end && *p==','){ p++; continue; }
+            if(p<end && *p=='}'){ p++; return true; }
+            return false;
+        }
+        return false;
+    }
+    bool array(JsonValue& v){
+        v.type=JsonValue::Arr; p++;
+        skipWs();
+        if(p<end && *p==']'){ p++; return true; }
+        while(p<end){
+            JsonValue el; if(!value(el)) return false;
+            v.arr.push_back(std::move(el));
+            skipWs();
+            if(p<end && *p==','){ p++; continue; }
+            if(p<end && *p==']'){ p++; return true; }
+            return false;
+        }
+        return false;
+    }
+    std::string lexString(){
+        p++; std::string s;
+        while(p<end && *p!='"'){
+            char c=*p++;
+            if(c=='\\'){
+                if(p>=end) break;
+                char e=*p++;
+                switch(e){
+                    case '"': s+='"'; break;
+                    case '\\': s+='\\'; break;
+                    case '/': s+='/'; break;
+                    case 'b': s+='\b'; break;
+                    case 'f': s+='\f'; break;
+                    case 'n': s+='\n'; break;
+                    case 'r': s+='\r'; break;
+                    case 't': s+='\t'; break;
+                    case 'u': if(p+4<=end) p+=4; break;   // 非 ASCII 占位, 新闻标题罕见
+                    default: s+=e; break;
+                }
+            } else s+=c;
+        }
+        if(p<end) p++;
+        return s;
+    }
+    bool boolean(JsonValue& v){
+        if(p+4<=end && std::string(p,4)=="true"){ p+=4; v.type=JsonValue::Bool; v.bval=true; return true; }
+        if(p+5<=end && std::string(p,5)=="false"){ p+=5; v.type=JsonValue::Bool; v.bval=false; return true; }
+        return false;
+    }
+    bool nullv(JsonValue& v){
+        if(p+4<=end && std::string(p,4)=="null"){ p+=4; v.type=JsonValue::Null; return true; }
+        return false;
+    }
+    bool number(JsonValue& v){
+        const char* s=p;
+        if(p<end && (*p=='-'||*p=='+')) p++;
+        while(p<end && (isdigit((unsigned char)*p)||*p=='.'||*p=='e'||*p=='E'||*p=='+'||*p=='-')) p++;
+        if(p==s) return false;
+        v.type=JsonValue::Num; v.num=std::atof(s); return true;
+    }
+};
+
+static long long epochFrom(const JsonValue* f){
+    if(!f) return 0;
+    if(f->type == JsonValue::Num) return (long long)f->num;
+    if(f->type == JsonValue::Str && !f->sval.empty()){
+        bool digits=!f->sval.empty();
+        for(unsigned char c: f->sval) if(!isdigit(c)){ digits=false; break; }
+        if(digits) return (long long)atoll(f->sval.c_str());
+        long long e=tryParseDate(f->sval);
+        if(e>0) return e;
+    }
+    return 0;
+}
+
+std::vector<NewsItem> parseJsonFeed(const std::string& body, const std::string& source, const std::string& category){
+    std::vector<NewsItem> out;
+    JsonParser jp(body);
+    JsonValue root;
+    if(!jp.value(root) || !jp.ok()) return out;
+
+    const JsonValue* src = root.find("data");
+    if(!src) src = root.find("result");
+    if(!src) src = &root;
+
+    // 找包含条目的数组: 优先已知键, 否则 data 下首个 对象数组
+    static const char* keys[] = {"roll_data","items","list","results","content","news","messages","data", nullptr};
+    const JsonValue* arr = nullptr;
+    for(int i=0; keys[i]; i++){
+        const JsonValue* c = src->find(keys[i]);
+        if(c && c->type==JsonValue::Arr && !c->arr.empty() && c->arr[0].type==JsonValue::Obj){ arr=c; break; }
+    }
+    if(!arr && src->type==JsonValue::Obj){
+        for(auto& kv: src->obj)
+            if(kv.second.type==JsonValue::Arr && !kv.second.arr.empty() && kv.second.arr[0].type==JsonValue::Obj){ arr=&kv.second; break; }
+    }
+    if(!arr) return out;
+
+    static const char* tkeys[] = {"title","text","content_text","brief","summary","content","digest","description","headline", nullptr};
+    static const char* lkeys[] = {"url","link","uniqueUrl","uri","detail_url","content_url","urlName","feedUrl", nullptr};
+    static const char* kkeys[] = {"ctime","display_time","showTime","create_time","publish_time","pushTime","ctimeStr", nullptr};
+
+    for(auto& item: arr->arr){
+        NewsItem it;
+        it.source = source;
+        it.category = category;
+        std::string title, desc;
+        for(int i=0; tkeys[i]; i++){ const JsonValue* f=item.find(tkeys[i]); if(f && f->type==JsonValue::Str && !f->sval.empty()){ if(title.empty()) title=f->sval; if(desc.empty()) desc=f->sval; break; } }
+        it.title = title;
+        it.description = desc;
+        for(int i=0; lkeys[i]; i++){ const JsonValue* f=item.find(lkeys[i]); if(f && f->type==JsonValue::Str && !f->sval.empty()){ it.link=f->sval; break; } }
+        long long ep=0;
+        for(int i=0; kkeys[i]; i++){ ep=epochFrom(item.find(kkeys[i])); if(ep>0) break; }
+        while(ep>1000000000000LL) ep/=1000;   // 毫秒->秒 (如 wallstcn display_time)
+        it.epoch = ep;
+        if(!it.title.empty() || !it.link.empty()) out.push_back(it);
+    }
+    return out;
+}
+
+std::vector<NewsItem> collectItems(const std::string& body, const std::string& source, const std::string& category){
+    for(unsigned char c: body){ if(isWs(c)) continue; return (c=='{') ? parseJsonFeed(body, source, category) : parseFeed(body, source, category); }
+    return {};
 }
 
 // ===================== SQLite 存储 =========================
