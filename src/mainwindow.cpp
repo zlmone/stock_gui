@@ -10,6 +10,10 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QTextEdit>
+#include <QSyntaxHighlighter>
+#include <fstream>
+#include <sstream>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHeaderView>
@@ -80,6 +84,82 @@ static bool isStaleStock(const std::string& lastDate, const std::string& latestD
     if (!a.isValid() || !b.isValid()) return false;
     return a.daysTo(b) > maxDays;
 }
+
+// 读取一份策略 .lua 文件到字符串 (供代码工作室预填)
+static std::string readStrategyFile(const std::string& path) {
+    std::ifstream f(path.c_str(), std::ios::binary);
+    if (!f) return std::string();
+    std::stringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+// ===== 代码工作室: 简易 Lua 语法高亮器 (单块遍历, 避免注释内再高亮字符串) =====
+class LuaHighlighter : public QSyntaxHighlighter {
+public:
+    explicit LuaHighlighter(QTextEdit* parent) : QSyntaxHighlighter(parent) {
+        kw_ << "and" << "break" << "do" << "else" << "elseif" << "end"
+            << "false" << "for" << "function" << "if" << "in" << "local"
+            << "nil" << "not" << "or" << "repeat" << "return" << "then"
+            << "true" << "until" << "while" << "goto";
+        QTextCharFormat kwFmt;
+        kwFmt.setForeground(QColor(0x00, 0x00, 0xcc));
+        kwFmt.setFontWeight(QFont::Bold);
+        kwFmt_ = kwFmt;
+    }
+protected:
+    void highlightBlock(const QString& text) override {
+        int n = (int)text.length();
+        int i = 0;
+        while (i < n) {
+            QChar ch = text.at(i);
+            if (ch == QChar('-') && i + 1 < n && text.at(i + 1) == QChar('-')) {
+                int end = text.indexOf(QChar('\n'), i);
+                if (end < 0) end = n;
+                QTextCharFormat f;
+                f.setForeground(QColor(0x2e, 0x7d, 0x32));
+                f.setFontItalic(true);
+                setFormat(i, end - i, f);
+                i = end;
+                continue;
+            }
+            if (ch == QChar('"') || ch == QChar('\'')) {
+                int end = text.indexOf(ch, i + 1);
+                if (end < 0) end = n; else end++;
+                QTextCharFormat f;
+                f.setForeground(QColor(0xc6, 0x28, 0x28));
+                setFormat(i, end - i, f);
+                i = end;
+                continue;
+            }
+            if (ch.isNumber()) {
+                int j = i + 1;
+                while (j < n && (text.at(j).isNumber() || text.at(j) == QChar('.')
+                                 || text.at(j) == QChar('e') || text.at(j) == QChar('E')
+                                 || text.at(j) == QChar('+') || text.at(j) == QChar('-'))) j++;
+                QTextCharFormat f;
+                f.setForeground(QColor(0x88, 0x44, 0xcc));
+                setFormat(i, j - i, f);
+                i = j;
+                continue;
+            }
+            if (ch.isLetter() || ch == QChar('_')) {
+                int j = i + 1;
+                while (j < n && (text.at(j).isLetterOrNumber() || text.at(j) == QChar('_'))) j++;
+                QString word = text.mid(i, j - i);
+                QTextCharFormat f;
+                if (kw_.contains(word)) { f = kwFmt_; }
+                else { f.setForeground(QColor(0x00, 0x00, 0x00)); }
+                setFormat(i, j - i, f);
+                i = j;
+                continue;
+            }
+            i++;
+        }
+    }
+private:
+    QStringList kw_;
+    QTextCharFormat kwFmt_;
+};
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent), engine_(resolveDbPath("kline_latest.db"), resolveDbPath("valuation.db")) {
@@ -411,6 +491,9 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     bvl->addWidget(stratCombo_);
     connect(stratCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onStrategyChanged);
+    // 切换策略 -> 重载源码入代码工作室编辑区
+    connect(stratCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::reloadSourceIntoEditor);
 
     // 策略语法检查 (编辑器地基: 运行/保存前拦截语法错误)
     {
@@ -453,7 +536,40 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     }
     connect(btnBt3_, &QPushButton::clicked, this, &MainWindow::runFormScan);
     bvl->addWidget(btnBt3_);
+
+    // ---------- 代码工作室 (内联编辑 on_bar/on_scan 源码) ----------
+    auto* gbEd = new QGroupBox(QStringLiteral("策略代码工作室\n(改完先点“检查策略语法”, 有语法错误不写盘)"));
+    auto* edvl = new QVBoxLayout(gbEd);
+    srcEdit_ = new QTextEdit();
+    srcEdit_->setPlaceholderText(QStringLiteral("切换到策略后自动填入该 .lua 源码; 在此直接编辑, 然后“保存源码到文件”写回"));
+    srcEdit_->setFont(QFont(QStringLiteral("Courier New"), 10));
+    srcEdit_->setLineWrapMode(QTextEdit::NoWrap);
+    srcEdit_->setUndoRedoEnabled(true);
+    srcEdit_->setMinimumHeight(180);
+    edvl->addWidget(srcEdit_, 1);
+    luaHL_ = new LuaHighlighter(srcEdit_);
+    auto* edRow2 = new QHBoxLayout();
+    btnSaveSource_ = new QPushButton(QStringLiteral("保存源码到文件"));
+    btnSaveSource_->setToolTip(QStringLiteral("先编译校验; 通过且非空才写盘, 写前自动 .bak 备份"));
+    btnReloadSource_ = new QPushButton(QStringLiteral("重载参数 (重读 params)"));
+    btnReloadSource_->setToolTip(QStringLiteral("不改动文件, 重新读取 params 重建调参框"));
+    btnResetSource_ = new QPushButton(QStringLiteral("重置源码"));
+    btnResetSource_->setToolTip(QStringLiteral("把编辑区还原为磁盘上的原始内容"));
+    edRow2->addWidget(btnSaveSource_);
+    edRow2->addWidget(btnReloadSource_);
+    edRow2->addWidget(btnResetSource_);
+    edRow2->addStretch();
+    edvl->addLayout(edRow2);
+    connect(btnSaveSource_, &QPushButton::clicked, this, &MainWindow::saveStrategySource);
+    connect(btnReloadSource_, &QPushButton::clicked, this, &MainWindow::reloadSourceIntoEditor);
+    connect(btnResetSource_, &QPushButton::clicked, this, &MainWindow::resetStrategySource);
+    auto* edHint = new QLabel(QStringLiteral("提示: 切换策略或保存成功后, 编辑区会刷新为最新内容."));
+    edHint->setWordWrap(true);
+    edHint->setStyleSheet(QStringLiteral("color:#888; font-size:11px;"));
+    edvl->addWidget(edHint);
     sv->addWidget(gbBt);
+
+    // 策略切换 -> 重载源码入编辑区 (已在上面 connect, 并在构造末尾初始化一次)
 
     // ---------- 显示选项 + 执行 ----------
     onlyMatch_ = new QCheckBox(QStringLiteral("仅显示满足条件的股票"));
@@ -493,6 +609,9 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
         connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &MainWindow::onFiltersChanged);
     for (auto* sp : {fSamplesVal_, fZtVal_})
         connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onFiltersChanged);
+
+    // 代码工作室: 构造时预填当前策略源码
+    reloadSourceIntoEditor();
 }
 
 // ==================== 逻辑 ====================
@@ -761,6 +880,56 @@ void MainWindow::checkStrategySyntax() {
                                                     canScan ? "可选股" : "无 on_scan");
     stratCheckLabel_->setText(cap);
     stratCheckLabel_->setStyleSheet("color:#2e7d32; font-weight:bold;");
+}
+
+// ---------- 代码工作室: 重载源码入编辑区 (从磁盘重读当前策略) ==========
+void MainWindow::reloadSourceIntoEditor() {
+    if (!srcEdit_ || !stratCombo_ || stratCombo_->count() == 0) return;
+    QString f = stratCombo_->currentData().toString();
+    if (f.isEmpty()) { srcEdit_->setPlainText(QStringLiteral("(未选择策略)")); return; }
+    std::string path = resolveStrategiesDir() + "/" + f.toStdString();
+    std::string content = readStrategyFile(path);
+    if (content.empty()) {
+        srcEdit_->setPlainText(QStringLiteral("(无法读取该策略文件, 请先保存其它工作)"));
+        return;
+    }
+    srcEdit_->setPlainText(QString::fromStdString(content));
+}
+
+// ---------- 代码工作室: 把编辑区内容写回 .lua (先编译校验, 写前 .bak) ========
+void MainWindow::saveStrategySource() {
+    if (!srcEdit_ || !stratCombo_ || stratCombo_->count() == 0) {
+        QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("未选择策略")); return; }
+    QString f = stratCombo_->currentData().toString();
+    if (f.isEmpty()) { QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("未选择策略")); return; }
+    std::string path = resolveStrategiesDir() + "/" + f.toStdString();
+    std::string content = srcEdit_->toPlainText().toStdString();
+    if (content.empty()) {
+        QMessageBox::information(this, QStringLiteral("参数工作室"), QStringLiteral("编辑区为空, 不写入。")); return;
+    }
+    std::string err;
+    if (!luaWriteStrategyFile(path, content, &err)) {
+        QMessageBox::critical(this, QStringLiteral("参数工作室"),
+            QString("保存失败:\n\n") + err.c_str());
+        return;
+    }
+    // 写成功: 重建参数 + 复检语法 + 刷新状态栏
+    rebuildParamWidgets();
+    checkStrategySyntax();
+    status_->setText(QStringLiteral("已保存 %1, 共 %2 字节\n(原文件已自动备份为 %1.bak)").arg(f)
+        .arg((int)content.size()));
+}
+
+// ---------- 代码工作室: 编辑区还原磁盘原文 ========
+void MainWindow::resetStrategySource() {
+    if (!srcEdit_ || !stratCombo_ || stratCombo_->count() == 0) return;
+    QString f = stratCombo_->currentData().toString();
+    if (f.isEmpty()) return;
+    std::string path = resolveStrategiesDir() + "/" + f.toStdString();
+    std::string content = readStrategyFile(path);
+    srcEdit_->setPlainText(content.empty()
+        ? QStringLiteral("(无法读取该策略文件)")
+        : QString::fromStdString(content));
 }
 
 // ==================== 个股详情弹窗 ====================

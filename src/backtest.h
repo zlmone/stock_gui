@@ -51,6 +51,11 @@ std::string luaSyntaxCheck(const std::string& luaPath);
 // 返回实际写入的参数个数; 若 params 块缺失或文件不可写返回 0 (调用方可提示)
 int luaWriteParams(const std::string& luaPath, const std::vector<StrategyParam>& params);
 
+// 写整份 .lua 源码 (编辑器工作室 P1-B): 先编译校验新内容(luaSyntaxCheck),
+// 无语法错误且非空才落盘 (写前 .bak 备份旧文件); errMsg 填失败原因。
+// 返回是否写入成功 (false=未改动磁盘, 调用方可提示)。
+bool luaWriteStrategyFile(const std::string& luaPath, const std::string& content, std::string* errMsg);
+
 class Backtest {
 public:
     explicit Backtest(const std::string& strategiesDir) : dir_(strategiesDir) {}

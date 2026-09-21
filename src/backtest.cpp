@@ -103,14 +103,10 @@ std::vector<StrategyParam> luaReadParams(const std::string& luaPath) {
 
 // Lua 语法预检: 只编译不运行 (loadstring 把整份文件转成函数, 出错即语法错误,
 // 不触发任何副作用: 不建 P 表、不执行顶层代码). 返回空串=通过.
-std::string luaSyntaxCheck(const std::string& luaPath) {
-    std::ifstream f(luaPath.c_str(), std::ios::binary);
-    if (!f) return "无法打开文件: " + luaPath;
-    std::stringstream ss;
-    ss << f.rdbuf();
-    std::string src = ss.str();
-    if (src.empty()) return "文件为空: " + luaPath;
-
+// 只编译不运行: 把一份源码 loadstring 成 chunk 函数, 出错即语法错误.
+// 不调用 = 不触发任何副作用 (不建 P 表、不执行顶层代码). 返回空串=通过.
+static std::string luaSrcCheck(const std::string& src) {
+    if (src.empty()) return "内容为空";
     lua_State* L = luaL_newstate();
     if (!L) return "无法创建 Lua 环境";
     luaL_openlibs(L);
@@ -124,6 +120,16 @@ std::string luaSyntaxCheck(const std::string& luaPath) {
     lua_pop(L, 1);     // 清理编译出的 chunk 函数 (不调用 = 不运行)
     lua_close(L);
     return "";
+}
+
+std::string luaSyntaxCheck(const std::string& luaPath) {
+    std::ifstream f(luaPath.c_str(), std::ios::binary);
+    if (!f) return "无法打开文件: " + luaPath;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    std::string src = ss.str();
+    if (src.empty()) return "文件为空: " + luaPath;
+    return luaSrcCheck(src);
 }
 
 // ---------- 把界面参数写回 .lua 文件 (P1-A: 参数工作室) ----------
@@ -226,6 +232,39 @@ int luaWriteParams(const std::string& luaPath, const std::vector<StrategyParam>&
     out_f << whole;
     out_f.flush();
     return (int)edits.size();
+}
+
+// 写整份 .lua 源码 (编辑器工作室 P1-B):
+// 先编译校验新内容 (luaSrcCheck, 不运行无副作用), 通过 + 非空才落盘,
+// 写前 .bak 备份旧文件. 失败不改写磁盘, 并通过 errMsg 说明原因.
+bool luaWriteStrategyFile(const std::string& luaPath, const std::string& content, std::string* errMsg) {
+    if (content.empty()) {
+        if (errMsg) *errMsg = "新内容为空, 不写入.";
+        return false;
+    }
+    std::string err = luaSrcCheck(content);
+    if (!err.empty()) {
+        if (errMsg) *errMsg = "保存中止: 新内容有语法错误, 请先修正. " + err;
+        return false;
+    }
+    std::ifstream cur(luaPath.c_str(), std::ios::binary);
+    if (cur) {
+        std::stringstream ss; ss << cur.rdbuf();
+        std::ofstream bak((luaPath + ".bak").c_str(), std::ios::binary);
+        if (bak) bak << ss.str();
+    }
+    std::ofstream out_f(luaPath.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out_f) {
+        if (errMsg) *errMsg = "无法写入文件 (可能被占用或只读): " + luaPath;
+        return false;
+    }
+    out_f << content;
+    out_f.flush();
+    if (!out_f.good()) {
+        if (errMsg) *errMsg = "写入出错, 文件未保存: " + luaPath;
+        return false;
+    }
+    return true;
 }
 
 std::vector<std::string> Backtest::strategyFiles() const {

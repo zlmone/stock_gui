@@ -2,6 +2,8 @@
 #pragma once
 #include <QMainWindow>
 #include <QString>
+#include <QTextEdit>
+#include <QSyntaxHighlighter>
 #include "engine.h"
 #include "backtest.h"
 
@@ -39,6 +41,9 @@ private slots:
     void saveStrategyParams();        // 参数工作室: 把当前参数写回 .lua 文件
     void checkStrategySyntax();       // 策略语法预检 (编辑器地基: 保存/运行前拦截)
     bool strategySyntaxOk(const QString& luaFile, QString* errMsg = nullptr);  // 底层语法检查(返回是否通过)
+    void reloadSourceIntoEditor();        // 代码工作室: 从磁盘重读当前策略到编辑区
+    void saveStrategySource();            // 代码工作室: 把编辑区内容写回 .lua
+    void resetStrategySource();           // 代码工作室: 编辑区还原磁盘原文
     void showStockDetail(int row, int col);   // 个股详情弹窗(双击体检表)
     void showStockDetailByCode(const std::string& code);  // 详情弹窗核心(按代码)
     void showSectorStats();                   // 板块聚合统计(当前结果)
@@ -123,6 +128,13 @@ private:
     // 策略参数 (动态控件)
     class QFormLayout* stratParamLayout_ = nullptr;
     std::vector<std::pair<StrategyParam, class QDoubleSpinBox*>> spWidgets_;
+
+    // 代码工作室 (内联编辑 on_bar/on_scan 源码)
+    QTextEdit*         srcEdit_ = nullptr;             // 源码编辑区 (等宽)
+    QSyntaxHighlighter* luaHL_ = nullptr;              // Lua 语法高亮器
+    class QPushButton* btnSaveSource_ = nullptr;       // 保存源码到文件
+    class QPushButton* btnReloadSource_ = nullptr;     // 重载参数(重读 params)
+    class QPushButton* btnResetSource_ = nullptr;      // 重置源码(还原磁盘原文)
 
     Engine engine_;
     bool engineReady_ = false;
