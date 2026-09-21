@@ -44,6 +44,9 @@ struct StrategyParam {
 // 读取策略文件的 params 定义 (无则返回空)
 std::vector<StrategyParam> luaReadParams(const std::string& luaPath);
 
+// Lua 语法预检: 只编译不运行; 返回空串=通过, 否则为 Lua 错误信息 (供 GUI 保存/运行前拦截)
+std::string luaSyntaxCheck(const std::string& luaPath);
+
 class Backtest {
 public:
     explicit Backtest(const std::string& strategiesDir) : dir_(strategiesDir) {}

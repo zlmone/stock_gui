@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <dirent.h>
 
 extern "C" {
@@ -96,6 +98,31 @@ std::vector<StrategyParam> luaReadParams(const std::string& luaPath) {
     }
     lua_close(L);
     return out;
+}
+
+// Lua 语法预检: 只编译不运行 (loadstring 把整份文件转成函数, 出错即语法错误,
+// 不触发任何副作用: 不建 P 表、不执行顶层代码). 返回空串=通过.
+std::string luaSyntaxCheck(const std::string& luaPath) {
+    std::ifstream f(luaPath.c_str(), std::ios::binary);
+    if (!f) return "无法打开文件: " + luaPath;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    std::string src = ss.str();
+    if (src.empty()) return "文件为空: " + luaPath;
+
+    lua_State* L = luaL_newstate();
+    if (!L) return "无法创建 Lua 环境";
+    luaL_openlibs(L);
+    int rc = luaL_loadstring(L, src.c_str());
+    if (rc != LUA_OK) {
+        std::string err = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_close(L);
+        return err;
+    }
+    lua_pop(L, 1);     // 清理编译出的 chunk 函数 (不调用 = 不运行)
+    lua_close(L);
+    return "";
 }
 
 std::vector<std::string> Backtest::strategyFiles() const {

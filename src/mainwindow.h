@@ -36,6 +36,8 @@ private slots:
     void onStrategyChanged();         // 策略切换: 按能力启用/禁用按钮
     void onBtFiltersChanged();        // 回测筛选条件变化
     void resetStrategyParams();       // 策略参数恢复默认
+    void checkStrategySyntax();       // 策略语法预检 (编辑器地基: 保存/运行前拦截)
+    bool strategySyntaxOk(const QString& luaFile, QString* errMsg = nullptr);  // 底层语法检查(返回是否通过)
     void showStockDetail(int row, int col);   // 个股详情弹窗(双击体检表)
     void showStockDetailByCode(const std::string& code);  // 详情弹窗核心(按代码)
     void showSectorStats();                   // 板块聚合统计(当前结果)
@@ -66,6 +68,8 @@ private:
     QDoubleSpinBox* dipSpin_ = nullptr;    // 急杀阈值
     QDoubleSpinBox* tpSpin_ = nullptr;     // 反弹目标
     QSpinBox*       holdSpin_ = nullptr;   // 持有窗口
+    class QPushButton* btnCheckSyntax_ = nullptr;   // 检查策略语法按钮
+    QLabel*       stratCheckLabel_ = nullptr;       // 语法检查结果提示(绿=OK/红=错误)
 
     // --- 筛选条件 (勾选 + 数值) ---
     QCheckBox* fFixRateOn_ = nullptr;  QDoubleSpinBox* fFixRateVal_ = nullptr;

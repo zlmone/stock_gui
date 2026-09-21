@@ -412,6 +412,21 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     connect(stratCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onStrategyChanged);
 
+    // 策略语法检查 (编辑器地基: 运行/保存前拦截语法错误)
+    {
+        auto* row = new QHBoxLayout();
+        btnCheckSyntax_ = new QPushButton(QStringLiteral("检查策略语法"));
+        btnCheckSyntax_->setToolTip(QStringLiteral("只编译不运行; 发现语法错误即拦截, 不触发回测"));
+        connect(btnCheckSyntax_, &QPushButton::clicked, this, &MainWindow::checkStrategySyntax);
+        row->addWidget(btnCheckSyntax_);
+        row->addStretch();
+        stratCheckLabel_ = new QLabel("就绪");
+        stratCheckLabel_->setWordWrap(true);
+        stratCheckLabel_->setMinimumWidth(160);
+        row->addWidget(stratCheckLabel_);
+        bvl->addLayout(row);
+    }
+
     // 策略参数 (动态渲染, 切换策略自动重建)
     auto* paramBox = new QGroupBox(QStringLiteral("策略参数 (选中的策略)"));
     stratParamLayout_ = new QFormLayout(paramBox);
@@ -711,6 +726,36 @@ void MainWindow::onStrategyChanged() {
         btnBt3_->setToolTip(canScan ? QString() : QStringLiteral("该策略未定义 on_scan, 不能筛选"));
     }
     rebuildParamWidgets();   // 重建参数控件
+    checkStrategySyntax();   // P0: 切换策略自动复检语法
+}
+
+// ---------- 策略语法预检 (编辑器地基 P0) ==========
+// 底层: 返回是否通过, 错误信息填 errMsg (供运行/保存前拦截)
+bool MainWindow::strategySyntaxOk(const QString& luaFile, QString* errMsg) {
+    QString f = luaFile.trimmed();
+    if (f.isEmpty()) { if (errMsg) *errMsg = "未选择策略"; return false; }
+    std::string err = luaSyntaxCheck(resolveStrategiesDir() + "/" + f.toStdString());
+    if (!err.empty() && errMsg) *errMsg = QString::fromStdString(err);
+    return err.empty();
+}
+
+void MainWindow::checkStrategySyntax() {
+    if (!bt_ || !stratCombo_ || !stratCheckLabel_) return;
+    QString f = stratCombo_->currentData().toString();
+    if (f.isEmpty()) { stratCheckLabel_->setText("无策略"); return; }
+    QString err;
+    if (!strategySyntaxOk(f, &err)) {
+        stratCheckLabel_->setText("✗ " + err);
+        stratCheckLabel_->setStyleSheet("color:#c62828; font-weight:bold;");
+        return;
+    }
+    std::string path = resolveStrategiesDir() + "/" + f.toStdString();
+    bool canBt = luaStrategyHas(path, "on_bar");
+    bool canScan = luaStrategyHas(path, "on_scan");
+    QString cap = QString("语法正确 OK | %1 %2").arg(canBt ? "可回测" : "无 on_bar",
+                                                    canScan ? "可选股" : "无 on_scan");
+    stratCheckLabel_->setText(cap);
+    stratCheckLabel_->setStyleSheet("color:#2e7d32; font-weight:bold;");
 }
 
 // ==================== 个股详情弹窗 ====================
@@ -1178,7 +1223,7 @@ void MainWindow::resetStrategyParams() {
 
 // ==================== 策略回测 (Lua) ====================
 void MainWindow::runStrategyBacktest() {
-    if (!engineReady_ || !bt_) return;
+    { QString _e; if (!strategySyntaxOk(stratCombo_->currentData().toString(), &_e)) { QMessageBox::information(this, QString("策略语法错误"), QString("当前策略 Lua 有语法错误, 不能运行:") + _e); return; } }
     QString text = codeEdit_->text().trimmed();
     if (text.isEmpty()) { QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("请输入股票代码")); return; }
     QStringList codes = text.split(QRegularExpression(QStringLiteral("[,\\s，]+")), Qt::SkipEmptyParts);
@@ -1216,7 +1261,7 @@ void MainWindow::runStrategyBacktest() {
 }
 
 void MainWindow::runStrategyScan() {
-    if (!engineReady_ || !bt_) return;
+    { QString _e; if (!strategySyntaxOk(stratCombo_->currentData().toString(), &_e)) { QMessageBox::information(this, QString("策略语法错误"), QString("当前策略 Lua 有语法错误, 不能运行:") + _e); return; } }
     auto stocks = engine_.allStocks();
     if (stocks.empty()) { status_->setText(QStringLiteral("数据库无股票列表")); return; }
     std::string luaFile = stratCombo_->currentData().toString().toStdString();
@@ -1391,7 +1436,7 @@ void MainWindow::showTradeDetail(int row, int col) {
 
 // ==================== 形态筛选 (on_scan) ====================
 void MainWindow::runFormScan() {
-    if (!engineReady_) return;
+    { QString _e; if (!strategySyntaxOk(stratCombo_->currentData().toString(), &_e)) { QMessageBox::information(this, QString("策略语法错误"), QString("当前策略 Lua 有语法错误, 不能运行:") + _e); return; } }
     std::string luaFile = stratCombo_->currentData().toString().toStdString();
     if (luaFile.empty()) { status_->setText(QStringLiteral("未选择策略")); return; }
     std::string luaPath = resolveStrategiesDir() + "/" + luaFile;
