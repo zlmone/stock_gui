@@ -2,6 +2,19 @@
 #include "mainwindow.h"
 #include "klinechart.h"
 #include "netclient.h"
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QEventLoop>
+#include <QTimer>
+#include <QDesktopServices>
+#include <QDateTime>
+#include <QUrl>
+#include <QUrlQuery>
+#include <QAbstractItemView>
+
+static int g_newsFailures = 0;
+static bool newsOffline() { return g_newsFailures >= 3; }
 #include <cstdio>
 #include <QTableWidget>
 #include <QLineEdit>
@@ -325,6 +338,58 @@ void MainWindow::buildUI() {
     scanTable_->setAlternatingRowColors(true);
     scanTable_->verticalHeader()->setVisible(false);
     rightTabs_->addTab(scanTable_, QStringLiteral("形态筛选"));
+    // ---- 新闻资讯 ----
+    newsNM_ = new QNetworkAccessManager(this);
+    newsTimer_ = new QTimer(this);
+    connect(newsTimer_, &QTimer::timeout, this, [this]() {
+        if (newsOffline()) { status_->setText(QStringLiteral("新闻源离线: 暂停自动刷新")); return; }
+        updateNews();
+    });
+
+    auto* newsWidget = new QWidget();
+    auto* newsLay = new QVBoxLayout(newsWidget);
+    auto* newsCtl = new QHBoxLayout();
+    btnUpdateNews_ = new QPushButton(QStringLiteral("\u27f3 更新"));
+    btnUpdateNews_->setMinimumHeight(28);
+    btnUpdateNews_->setToolTip(QStringLiteral("抓取全部财经源并刷新列表"));
+    connect(btnUpdateNews_, &QPushButton::clicked, this, &MainWindow::updateNews);
+    newsCtl->addWidget(btnUpdateNews_);
+    newsCtl->addWidget(new QLabel(QStringLiteral("分类: ")));
+    newsFilter_ = new QComboBox();
+    newsFilter_->addItem(QStringLiteral("全部"));
+    newsFilter_->addItem(QStringLiteral("国内"));
+    newsFilter_->addItem(QStringLiteral("国际"));
+    newsFilter_->addItem(QStringLiteral("宏观"));
+    connect(newsFilter_, &QComboBox::currentTextChanged, this, [this](const QString& t){ loadNewsView(t); });
+    newsCtl->addWidget(newsFilter_);
+    newsCtl->addWidget(new QLabel(QStringLiteral("自动刷新: ")));
+    newsInterval_ = new QComboBox();
+    newsInterval_->addItem(QStringLiteral("关闭"), 0);
+    newsInterval_->addItem(QStringLiteral("15 分钟"), 15);
+    newsInterval_->addItem(QStringLiteral("30 分钟"), 30);
+    newsInterval_->addItem(QStringLiteral("60 分钟"), 60);
+    newsInterval_->setCurrentIndex(2);
+    connect(newsInterval_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        int mins = newsInterval_->currentData().toInt();
+        if (mins > 0) { newsTimer_->start(mins * 60 * 1000); status_->setText(QStringLiteral("定时刷新: 每 %1 分钟自动更新").arg(mins)); }
+        else { newsTimer_->stop(); status_->setText(QStringLiteral("定时刷新: 已关闭")); }
+    });
+    newsCtl->addStretch();
+    newsLay->addLayout(newsCtl);
+    newsTable_ = new QTableWidget();
+    QString nh[4] = { QStringLiteral("时间"), QStringLiteral("来源"), QStringLiteral("分类"), QStringLiteral("标题") };
+    newsTable_->setColumnCount(4);
+    newsTable_->setHorizontalHeaderLabels(QStringList() << nh[0] << nh[1] << nh[2] << nh[3]);
+    newsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    newsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    newsTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    newsTable_->setAlternatingRowColors(true);
+    newsTable_->verticalHeader()->setVisible(false);
+    newsTable_->horizontalHeader()->setStretchLastSection(true);
+    newsTable_->setColumnWidth(0, 150);
+    connect(newsTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) { onNewsRowActivated(row); });
+    newsLay->addWidget(newsTable_, 1);
+    rightTabs_->addTab(newsWidget, QStringLiteral("新闻资讯"));
 
     rv->addWidget(rightTabs_, 1);
 
@@ -1114,6 +1179,51 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
     auto* tb = new QTextBrowser();
     tb->setHtml(html);
     tabs->addTab(tb, QStringLiteral("数据概况"));
+    // Related news: search news.db cache; double-click opens the source page
+    auto* newsPage = new QWidget();
+    auto* nlay = new QVBoxLayout(newsPage);
+    auto* newsTable = new QTableWidget();
+    QStringList ncol = { QString::fromUtf8("Time"), QString::fromUtf8("Source"), QString::fromUtf8("Category"), QString::fromUtf8("Title") };
+    newsTable->setColumnCount(ncol.size());
+    newsTable->setHorizontalHeaderLabels(ncol);
+    newsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    newsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    newsTable->setAlternatingRowColors(true);
+    newsTable->verticalHeader()->setVisible(false);
+    nlay->addWidget(newsTable, 1);
+    tabs->addTab(newsPage, QString::fromUtf8("News"));
+    {
+        QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
+        auto rows = searchNews(dbPath.toStdString(), code, 20);
+        newsTable->setRowCount(0);
+        for (auto& it : rows) {
+            int r = newsTable->rowCount();
+            newsTable->insertRow(r);
+            QString ts = it.epoch > 0
+                ? QDateTime::fromSecsSinceEpoch(it.epoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+                : QString();
+            auto* ti = new QTableWidgetItem(QString::fromStdString(it.title));
+            ti->setData(Qt::UserRole, QString::fromStdString(it.link));
+            newsTable->setItem(r, 0, new QTableWidgetItem(ts));
+            newsTable->setItem(r, 1, new QTableWidgetItem(QString::fromStdString(it.source)));
+            newsTable->setItem(r, 2, new QTableWidgetItem(QString::fromStdString(it.category)));
+            newsTable->setItem(r, 3, ti);
+        }
+        newsTable->horizontalHeader()->setStretchLastSection(true);
+        connect(newsTable, &QTableWidget::cellDoubleClicked, this, [this, newsTable](int row, int) {
+            if (row < 0) return;
+            QTableWidgetItem* t = newsTable->item(row, 3);
+            if (!t) return;
+            QString url = t->data(Qt::UserRole).toString();
+            if (!url.isEmpty()) QDesktopServices::openUrl(QUrl(url));
+        });
+        if (rows.empty())
+            status_->setText(QStringLiteral("%1: no related news cached, click [Update] to fetch.")
+                .arg(QString::fromStdString(name)));
+        else
+            status_->setText(QStringLiteral("%1 related news: %2 items.")
+                .arg(QString::fromStdString(name)).arg((int)rows.size()));
+    }
     lay->addWidget(tabs);
     dlg.resize(900, 700);
     dlg.exec();
@@ -1926,4 +2036,130 @@ void MainWindow::runSelfTest() {
         }
     }
     printf("[selftest] PASS\n");
+}
+
+
+// ==================== 新闻采集 (新闻资讯 tab) ====================
+// 单 feed 同步拉取 (mirrors netclient::fetchFundFlow 模式)
+QByteArray MainWindow::fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
+                                     int timeoutMs, QString* err) {
+    QNetworkRequest req{QUrl(url)};
+    req.setHeader(QNetworkRequest::UserAgentHeader,
+                  QStringLiteral("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"));
+    req.setHeader(QNetworkRequest::ContentTypeHeader,
+                  QStringLiteral("application/rss+xml, application/xml, text/xml, */*"));
+    req.setTransferTimeout(timeoutMs);
+    QNetworkReply* rep = mgr.get(req);
+    QEventLoop loop;
+    QObject::connect(rep, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    QByteArray body = rep->readAll();
+    bool ok = (rep->error() == QNetworkReply::NoError) && !body.trimmed().isEmpty();
+    if (!ok && err) *err = rep->errorString();
+    rep->deleteLater();
+    return body;
+}
+
+// 仅剥离 UTF-8 BOM; 默认采集源(Google News/CNBC/MarketWatch)均为 UTF-8
+static QByteArray convertToUtf8(QByteArray b) {
+    int n = b.size();
+    if (n >= 3 && (unsigned char)b[0] == 0xEF && (unsigned char)b[1] == 0xBB
+        && (unsigned char)b[2] == 0xBF) return b.mid(3);
+    return b;
+}
+
+void MainWindow::updateNews() {
+    if (!newsNM_) return;
+    btnUpdateNews_->setEnabled(false);
+    progress_->setVisible(true);
+    int total = (int)defaultQueries().size();
+    progress_->setRange(0, total);
+    progress_->setValue(0);
+    status_->setText(QStringLiteral("抓取新闻: 0/%1 ...").arg(total));
+
+    QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
+    std::vector<NewsItem> all;
+    int done = 0, okCount = 0;
+    for (auto& q : defaultQueries()) {
+        QString url = QString::fromStdString(buildFeedUrl(q));
+        QString err;
+        QByteArray body = fetchNewsFeed(*newsNM_, url, 15000, &err);
+        done++;
+        progress_->setValue(done);
+        if (body.isEmpty()) {
+            status_->setText(QStringLiteral("抓取 %1 失败: %2")
+                .arg(QString::fromStdString(q.source)).arg(err));
+            continue;
+        }
+        auto items = parseFeed(std::string(convertToUtf8(body).constData(),
+                                           convertToUtf8(body).size()),
+                               q.source, q.category);
+        if (!items.empty()) {
+            okCount++;
+            for (auto& it : items) all.push_back(it);
+        }
+        status_->setText(QStringLiteral("[%1/%2] %3: 解析 %4 条")
+            .arg(done).arg(total).arg(QString::fromStdString(q.source)).arg(items.size()));
+    }
+
+    if (okCount == 0) {
+        g_newsFailures++;
+        progress_->setVisible(false);
+        btnUpdateNews_->setEnabled(true);
+        status_->setText(QStringLiteral("新闻源暂时不可用, 请稍后重试"));
+        return;
+    }
+    g_newsFailures = 0;
+    all = dedupItems(all);
+    int added = cacheNews(dbPath.toStdString(), all);
+    loadNewsView(newsFilter_ ? newsFilter_->currentText() : QString());
+    int totalNow = newsTable_ ? newsTable_->rowCount() : 0;
+    progress_->setVisible(false);
+    btnUpdateNews_->setEnabled(true);
+    status_->setText(QStringLiteral("新闻已更新: 新增 %1 条, 缓存共 %2 条")
+        .arg(added).arg(totalNow));
+}
+
+void MainWindow::loadNewsView(const QString& category) {
+    if (!newsTable_) return;
+    QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
+    std::vector<NewsItem> rows = loadNews(dbPath.toStdString(), category.toStdString());
+
+    QStringList hc;
+    hc << QStringLiteral("时间") << QStringLiteral("来源")
+       << QStringLiteral("分类") << QStringLiteral("标题");
+    newsTable_->setSortingEnabled(false);
+    newsTable_->setUpdatesEnabled(false);
+    newsTable_->setColumnCount(4);
+    newsTable_->setHorizontalHeaderLabels(hc);
+    newsTable_->verticalHeader()->setVisible(false);
+    newsTable_->setRowCount(0);
+
+    for (auto& it : rows) {
+        int r = newsTable_->rowCount();
+        newsTable_->insertRow(r);
+        QString ts = it.epoch > 0
+            ? QDateTime::fromSecsSinceEpoch(it.epoch).toLocalTime()
+                  .toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+            : QString();
+        newsTable_->setItem(r, 0, new QTableWidgetItem(ts));
+        newsTable_->setItem(r, 1, new QTableWidgetItem(QString::fromStdString(it.source)));
+        newsTable_->setItem(r, 2, new QTableWidgetItem(QString::fromStdString(it.category)));
+        auto* ti = new QTableWidgetItem(QString::fromStdString(it.title));
+        ti->setData(Qt::UserRole, QString::fromStdString(it.link));
+        newsTable_->setItem(r, 3, ti);
+    }
+    newsTable_->horizontalHeader()->setStretchLastSection(true);
+    newsTable_->setUpdatesEnabled(true);
+    if (rows.empty()) return;
+    status_->setText(QStringLiteral("新闻缓存: 共 %1 条 (%2)")
+        .arg(rows.size()).arg(category.isEmpty() ? QStringLiteral("全部") : category));
+}
+
+void MainWindow::onNewsRowActivated(int row) {
+    if (row < 0 || row >= newsTable_->rowCount()) return;
+    QTableWidgetItem* t = newsTable_->item(row, 3);
+    if (!t) return;
+    QString url = t->data(Qt::UserRole).toString();
+    if (!url.isEmpty()) QDesktopServices::openUrl(QUrl(url));
 }

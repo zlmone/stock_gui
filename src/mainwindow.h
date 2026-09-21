@@ -6,6 +6,7 @@
 #include <QSyntaxHighlighter>
 #include "engine.h"
 #include "backtest.h"
+#include "news.h"
 
 class QTableWidget;
 class QLineEdit;
@@ -14,6 +15,9 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QCheckBox;
 class QVBoxLayout;
+class QComboBox;
+class QNetworkAccessManager;
+void probeFunc(int a, int b);
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -49,6 +53,13 @@ private slots:
     void showSectorStats();                   // 板块聚合统计(当前结果)
     void updateData();                // 联网更新全市场数据
     void showTradeDetail(int row, int col);
+
+    // --- 新闻采集 ---
+    void updateNews();                       // 抓取+解析+缓存全部源(联网, 带进度/离线记忆)
+    void loadNewsView(const QString& category);  // 按分类从缓存刷新新闻表
+    void onNewsRowActivated(int row);        // 双击列表行 -> 浏览器打开原文
+    static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
+                                    int timeoutMs, QString* err);  // 单 feed 同步拉取
 
 private:
     void buildUI();
@@ -135,6 +146,14 @@ private:
     class QPushButton* btnSaveSource_ = nullptr;       // 保存源码到文件
     class QPushButton* btnReloadSource_ = nullptr;     // 重载参数(重读 params)
     class QPushButton* btnResetSource_ = nullptr;      // 重置源码(还原磁盘原文)
+
+    // News collection tab members
+    QTableWidget* newsTable_ = nullptr;
+    class QComboBox*    newsFilter_ = nullptr;
+    class QPushButton*  btnUpdateNews_ = nullptr;
+    class QComboBox*    newsInterval_ = nullptr;
+    class QTimer*       newsTimer_ = nullptr;
+    QNetworkAccessManager* newsNM_ = nullptr;
 
     Engine engine_;
     bool engineReady_ = false;

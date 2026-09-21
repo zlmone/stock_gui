@@ -52,7 +52,18 @@ if(NOT WIN32)
     target_link_libraries(bt_test PRIVATE pthread dl)
 endif()
 
-# ---- 2) Qt GUI 主程序 (检测到 Qt5 才构建) ----
+# ---- 2) 新闻采集核心单测 (纯 C++, 不联网, 任何平台) ----
+add_executable(news_test
+    src/twp_news.cpp
+    src/news.cpp
+    ${SQLITE_SRC}
+)
+target_include_directories(news_test PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)
+if(NOT WIN32)
+    target_link_libraries(news_test PRIVATE pthread dl)
+endif()
+
+# ---- 3) Qt GUI 主程序 (检测到 Qt5 才构建) ----
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 find_package(Qt5 COMPONENTS Widgets Network QUIET)
@@ -64,6 +75,7 @@ if(Qt5_FOUND)
         src/engine.cpp
         src/backtest.cpp
         src/klinechart.cpp
+        src/news.cpp
         ${SQLITE_SRC}
     )
     target_include_directories(stock_gui PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)
