@@ -435,6 +435,11 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     auto* btnReset = new QPushButton(QStringLiteral("恢复默认参数"));
     connect(btnReset, &QPushButton::clicked, this, &MainWindow::resetStrategyParams);
     bvl->addWidget(btnReset);
+
+    // 参数工作室: 把调好的参数写回 .lua (仅改 value= 令牌, 保留注释/逻辑)
+    auto* btnSaveParams = new QPushButton(QStringLiteral("保存参数到文件"));
+    connect(btnSaveParams, &QPushButton::clicked, this, &MainWindow::saveStrategyParams);
+    bvl->addWidget(btnSaveParams);
     btnBt1_ = new QPushButton(QStringLiteral("回测输入的代码"));
     connect(btnBt1_, &QPushButton::clicked, this, &MainWindow::runStrategyBacktest);
     bvl->addWidget(btnBt1_);
@@ -1219,6 +1224,40 @@ std::vector<StrategyParam> MainWindow::currentStrategyParams() const {
 void MainWindow::resetStrategyParams() {
     for (auto& pr : spWidgets_) pr.second->setValue(pr.first.value);
     status_->setText(QStringLiteral("已恢复该策略的默认参数"));
+}
+
+// 参数工作室: 把界面调好的参数写回 .lua 的 params 块 (仅改 value= 令牌)
+void MainWindow::saveStrategyParams() {
+    if (stratCombo_->count() == 0) {
+        QMessageBox::information(this, QStringLiteral("参数工作室"), QStringLiteral("没有可用策略。"));
+        return;
+    }
+    QString luaFile = stratCombo_->currentData().toString();
+    if (luaFile.isEmpty()) return;
+    QString luaPath = QString::fromStdString(resolveStrategiesDir()) + "/" + luaFile;
+
+    std::vector<StrategyParam> pv = currentStrategyParams();
+    if (pv.empty()) {
+        QMessageBox::information(this, QStringLiteral("参数工作室"),
+            QStringLiteral("该策略没有可调参数, 无可保存内容。"));
+        return;
+    }
+    // P0: 写前复检, 避免在已损坏的脚本上落盘
+    QString err;
+    if (!strategySyntaxOk(luaFile, &err)) {
+        QMessageBox::critical(this, QStringLiteral("参数工作室"),
+            QString("保存中止:\n当前 Lua 已有语法错误, 请先修正后重试。\n\n") + err);
+        return;
+    }
+    int n = luaWriteParams(luaPath.toStdString(), pv);
+    if (n <= 0) {
+        QMessageBox::warning(this, QStringLiteral("参数工作室"),
+            QString("写入失败, 参数未保存。\n\n文件: %1\n\n请确认文件未被占用或只读。").arg(luaPath));
+        return;
+    }
+    checkStrategySyntax();
+    status_->setText(QStringLiteral("✓ 已把 %1 个参数写回 %2 | 原文件已备份 %2.bak")
+        .arg(n).arg(luaFile));
 }
 
 // ==================== 策略回测 (Lua) ====================

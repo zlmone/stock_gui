@@ -47,6 +47,10 @@ std::vector<StrategyParam> luaReadParams(const std::string& luaPath);
 // Lua 语法预检: 只编译不运行; 返回空串=通过, 否则为 Lua 错误信息 (供 GUI 保存/运行前拦截)
 std::string luaSyntaxCheck(const std::string& luaPath);
 
+// 把界面参数写回 .lua 文件的 params 块: 仅替换各 key 的 value= 令牌, 保留注释/格式/逻辑
+// 返回实际写入的参数个数; 若 params 块缺失或文件不可写返回 0 (调用方可提示)
+int luaWriteParams(const std::string& luaPath, const std::vector<StrategyParam>& params);
+
 class Backtest {
 public:
     explicit Backtest(const std::string& strategiesDir) : dir_(strategiesDir) {}

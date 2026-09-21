@@ -36,6 +36,7 @@ private slots:
     void onStrategyChanged();         // 策略切换: 按能力启用/禁用按钮
     void onBtFiltersChanged();        // 回测筛选条件变化
     void resetStrategyParams();       // 策略参数恢复默认
+    void saveStrategyParams();        // 参数工作室: 把当前参数写回 .lua 文件
     void checkStrategySyntax();       // 策略语法预检 (编辑器地基: 保存/运行前拦截)
     bool strategySyntaxOk(const QString& luaFile, QString* errMsg = nullptr);  // 底层语法检查(返回是否通过)
     void showStockDetail(int row, int col);   // 个股详情弹窗(双击体检表)
@@ -70,6 +71,7 @@ private:
     QSpinBox*       holdSpin_ = nullptr;   // 持有窗口
     class QPushButton* btnCheckSyntax_ = nullptr;   // 检查策略语法按钮
     QLabel*       stratCheckLabel_ = nullptr;       // 语法检查结果提示(绿=OK/红=错误)
+    class QPushButton* btnSaveParams_ = nullptr;    // 参数工作室: 把参数写回 .lua
 
     // --- 筛选条件 (勾选 + 数值) ---
     QCheckBox* fFixRateOn_ = nullptr;  QDoubleSpinBox* fFixRateVal_ = nullptr;

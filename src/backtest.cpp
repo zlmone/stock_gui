@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <cctype>
 #include <dirent.h>
 
 extern "C" {
@@ -123,6 +124,108 @@ std::string luaSyntaxCheck(const std::string& luaPath) {
     lua_pop(L, 1);     // 清理编译出的 chunk 函数 (不调用 = 不运行)
     lua_close(L);
     return "";
+}
+
+// ---------- 把界面参数写回 .lua 文件 (P1-A: 参数工作室) ----------
+// 仅替换 params 块内各 key 对应的 value= 令牌, 其余原文照搬 (保留注释/格式/逻辑).
+static inline bool _isIdentChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+// 定位 `params = {` 里第一个 `{` 的位置 (含词边界, 避开注释/标签里的子串)
+static size_t _findParamsTable(const std::string& src) {
+    size_t pidx = 0;
+    while (true) {
+        size_t kw = src.find("params", pidx);
+        if (kw == std::string::npos) return std::string::npos;
+        if (kw == 0 || !_isIdentChar(src[kw - 1])) {
+            size_t j = kw + 6;
+            while (j < src.size() &&
+                   (src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == '\r')) j++;
+            if (j < src.size() && src[j] == '=') {
+                size_t k = j + 1;
+                while (k < src.size() &&
+                       (src[k] == ' ' || src[k] == '\t' || src[k] == '\n' || src[k] == '\r')) k++;
+                if (k < src.size() && src[k] == '{') return k;
+            }
+        }
+        pidx = kw + 6;
+    }
+}
+// 返回 openIdx 处 `{` 匹配的 `}` 位置 (按嵌套深度)
+static size_t _matchBrace(const std::string& s, size_t openIdx) {
+    int depth = 0;
+    for (size_t i = openIdx; i < s.size(); ++i) {
+        char c = s[i];
+        if (c == '{') depth++;
+        else if (c == '}') { if (--depth == 0) return i; }
+    }
+    return std::string::npos;
+}
+// 把 double 格式化为紧凑的 Lua 数字 (整数不补 .0, 小数去尾零)
+static std::string _fmtParam(const StrategyParam& p) {
+    char buf[64];
+    if (p.isInt) snprintf(buf, sizeof(buf), "%.0f", p.value);
+    else snprintf(buf, sizeof(buf), "%.10g", p.value);
+    return std::string(buf);
+}
+
+int luaWriteParams(const std::string& luaPath, const std::vector<StrategyParam>& params) {
+    std::ifstream in(luaPath.c_str(), std::ios::binary);
+    if (!in) return 0;
+    std::stringstream ss; ss << in.rdbuf();
+    std::string src = ss.str();
+    if (src.empty()) return 0;
+
+    size_t open = _findParamsTable(src);
+    if (open == std::string::npos) return 0;
+    size_t close = _matchBrace(src, open);
+    if (close == std::string::npos) return 0;
+
+    std::string block = src.substr(open, close - open + 1);
+    std::vector<std::pair<size_t, size_t>> edits;   // 原 src 上的区间 [ns, ne)
+    std::vector<std::string> newTexts;
+    size_t searchFrom = 0;
+    for (const auto& p : params) {
+        std::string keyTok = "key=\"" + p.key + "\"";   // key="X"
+        size_t ki = block.find(keyTok, searchFrom);
+        if (ki == std::string::npos) continue;          // key 未找到, 跳过
+        size_t after = ki + keyTok.size();
+        size_t nextKey = block.find("key=\"", after);   // 下一项起点 (边界)
+        size_t lim = (nextKey != std::string::npos) ? nextKey : block.size();
+        size_t vi = block.find("value=", after);
+        if (vi == std::string::npos || vi >= lim) continue;
+        size_t ni = vi + 6;
+        while (ni < block.size() && (block[ni] == ' ' || block[ni] == '\t')) ni++;
+        size_t ns = ni, ne = ni;
+        while (ne < block.size() &&
+               (isdigit((unsigned char)block[ne]) || block[ne] == '.' ||
+                block[ne] == 'e' || block[ne] == 'E' ||
+                block[ne] == '+' || block[ne] == '-')) ne++;
+        if (ne == ns) continue;                          // 非数字, 跳过
+        edits.push_back({ns, ne - ns});
+        newTexts.push_back(_fmtParam(p));
+        searchFrom = ne;
+    }
+    if (edits.empty()) return 0;
+
+    // 逆序应用 (索引基于原 src, 逆序替换保持其余偏移有效)
+    std::string out = block;
+    for (int i = (int)edits.size() - 1; i >= 0; --i)
+        out.replace(edits[i].first, edits[i].second, newTexts[i]);
+
+    std::string whole = src.substr(0, open) + out + src.substr(close + 1);
+    if (whole == src) return (int)edits.size();        // 无实质变化
+
+    {  // 先保留一份旧备份 (失败不阻塞)
+        std::ofstream bak((luaPath + ".bak").c_str(), std::ios::binary);
+        if (bak) bak << src;
+    }
+    std::ofstream out_f(luaPath.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out_f) return 0;
+    out_f << whole;
+    out_f.flush();
+    return (int)edits.size();
 }
 
 std::vector<std::string> Backtest::strategyFiles() const {
