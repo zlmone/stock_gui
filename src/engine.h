@@ -31,6 +31,23 @@ struct SnapInfo {
     double turnover = 0;       // 最新日换手率(%)
 };
 
+// 当日资金流(东财口径; 由 netclient 抓取落库 fundflow.db, 引擎/策略层只读)
+//   主力净流入 = 超大单 + 大单; 净占比 = 净额 / 成交额
+struct FundFlowDay {
+    std::string code;          // 带后缀, 例 "600000.SH"(与库内K线口径一致)
+    std::string name;
+    std::string date;          // YYYY-MM-DD(空 = 无数据)
+    double close = 0;          // 现价
+    double changePct = 0;      // 涨跌幅 %
+    double mainNet = 0;        // 主力净流入(元)
+    double mainPct = 0;        // 主力净占比 %
+    double superNet = 0;       // 超大单净额(元)
+    double bigNet = 0;         // 大单净额(元)
+    double midNet = 0;         // 中单净额(元)
+    double smallNet = 0;       // 小单净额(元)
+    bool ok() const { return !date.empty(); }
+};
+
 // 筹码分布 (三角分布法, 近260日近似)
 struct ChipDist {
     bool ok = false;

@@ -1039,3 +1039,290 @@ bool updateValuationDb(const QString& dbPath, int limit,
     if (verbose) fprintf(stderr, "[val] 入库: %d 行\n", written);
     return true;
 }
+
+// ==================== 当日全市场资金流 (东财资金流排行) ====================
+// 口径说明(实测): 主力净流入 = 超大单 + 大单; 净占比 = 净额 / 成交额
+//   f62 主力净额  f66 超大单  f72 大单  f78 中单  f84 小单  f184 主力净占比  f124 时间戳
+QString codeWithSuffix(const QString& bare6) {
+    QString p = bare6.section('.', 0, 0).trimmed();
+    if (p.isEmpty()) return p;
+    // 920xxx 也是北交所(易与沪市 900xxx B股混淆, 所以先判)
+    if (p.startsWith("920") || p.startsWith('4') || p.startsWith('8')) return p + ".BJ";
+    if (p.startsWith('6') || p.startsWith('9') || p.startsWith('5')) return p + ".SH";
+    return p + ".SZ";
+}
+
+// 分页地址。实测: 裸域名 push2.eastmoney.com 会被限流(60 页里挂掉 26 页),
+// 换成带编号的镜像 82.push2 同样 60 页 22 秒零失败 —— 所以默认走镜像, 失败再换。
+static const char* const kFfHosts[] = {
+    "82.push2.eastmoney.com", "1.push2.eastmoney.com", "push2.eastmoney.com"
+};
+static QString ffUrl(const char* host, int pn, int pz) {
+    // fs = 沪深京 A 股全市场; fid=f62 按主力净流入排序; po=1 降序
+    return QStringLiteral("http://%1/api/qt/clist/get?pn=%2&pz=%3&po=1&np=1"
+                          "&fltt=2&invt=2&fid=f62"
+                          "&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
+                          "&fields=f12,f14,f2,f3,f62,f184,f66,f72,f78,f84,f124")
+        .arg(QLatin1String(host)).arg(pn).arg(pz);
+}
+
+static double ffNum(const QJsonObject& o, const char* k) {
+    QJsonValue v = o.value(QLatin1String(k));
+    if (v.isDouble()) return v.toDouble();
+    if (v.isString()) { bool ok = false; double d = v.toString().toDouble(&ok); return ok ? d : 0.0; }
+    return 0.0;
+}
+
+int updateFundFlowToday(const QString& dbPath, bool force,
+                        const std::function<void(int, int)>& progress,
+                        QString* err, bool verbose) {
+    err->clear();
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(dbPath.toUtf8().constData(), &db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK) {
+        *err = QStringLiteral("打不开资金流库: ") + dbPath;
+        if (db) sqlite3_close(db);
+        return 0;
+    }
+    char* emsg = nullptr;
+    auto ex = [&](const char* sql) -> bool {
+        if (sqlite3_exec(db, sql, nullptr, nullptr, &emsg) != SQLITE_OK) {
+            *err = QStringLiteral("SQL错误: ") + (emsg ? emsg : "?");
+            if (emsg) sqlite3_free(emsg);
+            return false;
+        }
+        return true;
+    };
+    if (!ex("CREATE TABLE IF NOT EXISTS fundflow_daily (code TEXT, date TEXT, name TEXT, close REAL,"
+            " change_pct REAL, main_net REAL, main_pct REAL, super_net REAL, big_net REAL,"
+            " mid_net REAL, small_net REAL, PRIMARY KEY(code, date))")) {
+        sqlite3_close(db);
+        return 0;
+    }
+    ex("CREATE INDEX IF NOT EXISTS idx_ff_date ON fundflow_daily(date)");
+
+    // 1. 分页拉全市场(56 页左右, 每页 100 只)
+    QNetworkAccessManager mgr;
+    QVector<FundFlowDay> all;
+    QDateTime maxTs;
+    int total = 0;
+    const int PZ = 100;
+    QElapsedTimer et; et.start();
+    for (int pn = 1; pn <= 200; pn++) {
+        // 单页最多试 4 次: 每次换一个镜像域名 + 递增退避(接口偶发直接断连接)
+        QJsonArray diff;
+        QString lastErr = QStringLiteral("无响应");
+        for (int attempt = 0; attempt < 4; attempt++) {
+            const char* host = kFfHosts[attempt % 3];
+            QNetworkRequest req((QUrl(ffUrl(host, pn, PZ))));
+            req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0"));
+            req.setTransferTimeout(15000);
+            QNetworkReply* rep = mgr.get(req);
+            QEventLoop loop;
+            QObject::connect(rep, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+            loop.exec();
+            QByteArray body = rep->readAll();
+            bool netOk = (rep->error() == QNetworkReply::NoError);
+            rep->deleteLater();
+            if (!netOk) {
+                lastErr = QStringLiteral("网络中断");
+            } else {
+                QJsonObject root = QJsonDocument::fromJson(body).object();
+                QJsonObject data = root.value("data").toObject();
+                if (pn == 1 && data.isEmpty()) {
+                    lastErr = QStringLiteral("接口无数据(可能被限流)");
+                } else {
+                    diff = data.value("diff").toArray();
+                    if (!diff.isEmpty()) {
+                        if (pn == 1) total = data.value("total").toInt();
+                        break;
+                    }
+                    lastErr = QStringLiteral("空响应");
+                }
+            }
+            QThread::msleep(600 * (attempt + 1));   // 退避: 0.6s / 1.2s / 1.8s
+        }
+        if (diff.isEmpty()) {
+            *err = QStringLiteral("第 %1 页抓取失败(%2), 已放弃; 原有数据未改动, 过几分钟重试")
+                       .arg(pn).arg(lastErr);
+            sqlite3_close(db);
+            return 0;
+        }
+        for (const QJsonValue& v : diff) {
+            QJsonObject o = v.toObject();
+            QString bare = o.value("f12").toString();
+            if (bare.isEmpty()) continue;
+            FundFlowDay f;
+            f.code = codeWithSuffix(bare).toStdString();
+            f.name = o.value("f14").toString().toStdString();
+            f.close = ffNum(o, "f2");
+            f.changePct = ffNum(o, "f3");
+            f.mainNet = ffNum(o, "f62");
+            f.mainPct = ffNum(o, "f184");
+            f.superNet = ffNum(o, "f66");
+            f.bigNet = ffNum(o, "f72");
+            f.midNet = ffNum(o, "f78");
+            f.smallNet = ffNum(o, "f84");
+            double ts = ffNum(o, "f124");
+            if (ts > 1e9) {
+                QDateTime dt = QDateTime::fromSecsSinceEpoch((qint64)ts);
+                if (!maxTs.isValid() || dt > maxTs) maxTs = dt;
+            }
+            all.push_back(f);
+        }
+        int pages = (total > 0) ? (total + PZ - 1) / PZ : pn;
+        if (progress) progress(pn, pages);
+        if (diff.size() < PZ) break;
+        if (total > 0 && all.size() >= total) break;
+        QThread::msleep(200);                // 温柔一点, 别把接口打急(实测 250ms * 60 页 ≈ 22 秒)
+    }
+    if (all.isEmpty()) {
+        *err = QStringLiteral("未取到任何资金流数据");
+        sqlite3_close(db);
+        return 0;
+    }
+    // 行情日期: 用返回数据里最新的时间戳(周末/节假日跑就是上一个交易日)
+    QString date = maxTs.isValid()
+        ? maxTs.toString(QStringLiteral("yyyy-MM-dd"))
+        : QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"));
+
+    // 2. 已有当天数据就不重复写(除非 force)
+    if (!force) {
+        sqlite3_stmt* st = nullptr;
+        int cnt = 0;
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM fundflow_daily WHERE date=?", -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, date.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(st) == SQLITE_ROW) cnt = sqlite3_column_int(st, 0);
+        }
+        sqlite3_finalize(st);
+        if (cnt > 0 && cnt >= (int)(all.size() * 0.9)) {      // 覆盖 90% 以上即视为已最新
+            sqlite3_close(db);
+            if (verbose) fprintf(stderr, "[ff] %s 已有 %d 条, 无需更新\n", date.toUtf8().constData(), cnt);
+            return 2;
+        }
+    }
+
+    // 3. 落库(事务; 失败不影响已有数据)
+    if (!ex("BEGIN")) { sqlite3_close(db); return 0; }
+    sqlite3_stmt* ins = nullptr;
+    if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO fundflow_daily VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                           -1, &ins, nullptr) != SQLITE_OK) {
+        *err = QStringLiteral("准备写入失败");
+        ex("ROLLBACK");
+        sqlite3_close(db);
+        return 0;
+    }
+    int written = 0;
+    for (const FundFlowDay& f : all) {
+        sqlite3_bind_text(ins, 1, f.code.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 2, date.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 3, f.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(ins, 4, f.close);
+        sqlite3_bind_double(ins, 5, f.changePct);
+        sqlite3_bind_double(ins, 6, f.mainNet);
+        sqlite3_bind_double(ins, 7, f.mainPct);
+        sqlite3_bind_double(ins, 8, f.superNet);
+        sqlite3_bind_double(ins, 9, f.bigNet);
+        sqlite3_bind_double(ins, 10, f.midNet);
+        sqlite3_bind_double(ins, 11, f.smallNet);
+        if (sqlite3_step(ins) == SQLITE_DONE) written++;
+        sqlite3_reset(ins);
+    }
+    sqlite3_finalize(ins);
+    ex("COMMIT");
+    sqlite3_close(db);
+    if (verbose) {
+        fprintf(stderr, "[ff] %s 入库 %d 行 / 接口 %d 只, 耗时 %.1f 秒\n",
+                date.toUtf8().constData(), written, total, et.elapsed() / 1000.0);
+    }
+    return 1;
+}
+
+std::vector<FundFlowDay> loadFundFlow(const QString& dbPath, const QString& date,
+                                     int limit, QString* outDate) {
+    std::vector<FundFlowDay> out;
+    if (outDate) outDate->clear();
+    if (!QFile::exists(dbPath)) return out;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(dbPath.toUtf8().constData(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return out;
+    }
+    QString d = date;
+    if (d.isEmpty()) {
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT MAX(date) FROM fundflow_daily", -1, &st, nullptr) == SQLITE_OK
+            && sqlite3_step(st) == SQLITE_ROW) {
+            const unsigned char* p = sqlite3_column_text(st, 0);
+            if (p) d = QString::fromUtf8((const char*)p);
+        }
+        sqlite3_finalize(st);
+    }
+    if (outDate) *outDate = d;
+    if (!d.isEmpty()) {
+        QString sql = QStringLiteral("SELECT code,date,name,close,change_pct,main_net,main_pct,"
+                                     "super_net,big_net,mid_net,small_net FROM fundflow_daily "
+                                     "WHERE date=? ORDER BY main_net DESC");
+        if (limit > 0) sql += QStringLiteral(" LIMIT %1").arg(limit);
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db, sql.toUtf8().constData(), -1, &st, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, d.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                auto txt = [&](int i) -> QString {
+                    const unsigned char* p = sqlite3_column_text(st, i);
+                    return p ? QString::fromUtf8((const char*)p) : QString();
+                };
+                FundFlowDay f;
+                f.code = txt(0).toStdString(); f.date = txt(1).toStdString(); f.name = txt(2).toStdString();
+                f.close = sqlite3_column_double(st, 3);
+                f.changePct = sqlite3_column_double(st, 4);
+                f.mainNet = sqlite3_column_double(st, 5);
+                f.mainPct = sqlite3_column_double(st, 6);
+                f.superNet = sqlite3_column_double(st, 7);
+                f.bigNet = sqlite3_column_double(st, 8);
+                f.midNet = sqlite3_column_double(st, 9);
+                f.smallNet = sqlite3_column_double(st, 10);
+                out.push_back(f);
+            }
+        }
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+    return out;
+}
+
+FundFlowDay fundFlowOf(const QString& dbPath, const QString& code) {
+    FundFlowDay f;
+    if (!QFile::exists(dbPath) || code.isEmpty()) return f;
+    QString keyQ = code.contains('.') ? code : codeWithSuffix(code);
+    std::string key = keyQ.toStdString();
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(dbPath.toUtf8().constData(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return f;
+    }
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT code,date,name,close,change_pct,main_net,main_pct,super_net,"
+                               "big_net,mid_net,small_net FROM fundflow_daily WHERE code=? "
+                               "ORDER BY date DESC LIMIT 1", -1, &st, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            auto txt = [&](int i) -> QString {
+                const unsigned char* p = sqlite3_column_text(st, i);
+                return p ? QString::fromUtf8((const char*)p) : QString();
+            };
+            f.code = txt(0).toStdString(); f.date = txt(1).toStdString(); f.name = txt(2).toStdString();
+            f.close = sqlite3_column_double(st, 3);
+            f.changePct = sqlite3_column_double(st, 4);
+            f.mainNet = sqlite3_column_double(st, 5);
+            f.mainPct = sqlite3_column_double(st, 6);
+            f.superNet = sqlite3_column_double(st, 7);
+            f.bigNet = sqlite3_column_double(st, 8);
+            f.midNet = sqlite3_column_double(st, 9);
+            f.smallNet = sqlite3_column_double(st, 10);
+        }
+    }
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return f;
+}

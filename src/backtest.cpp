@@ -518,7 +518,7 @@ ScanSession::~ScanSession() {
     if (L_) lua_close(L_);
 }
 
-ScanResult ScanSession::test(const std::vector<Bar>& bars, double rps) {
+ScanResult ScanSession::test(const std::vector<Bar>& bars, double rps, const FundFlowDay* ff) {
     ScanResult res;
     if (!ok_ || !L_) { res.error = "会话未初始化"; return res; }
     size_t n = bars.size();
@@ -578,6 +578,17 @@ ScanResult ScanSession::test(const std::vector<Bar>& bars, double rps) {
     if (rps > 0.0) {                       // 全市场相对强度百分位(由引擎预计算注入)
         lua_pushnumber(L_, rps);
         lua_setfield(L_, s_idx, "rps");
+    }
+    // 当日资金流(东财口径, 调用方从 fundflow.db 读好传入; 没数据就不注入,
+    // 脚本里用 if s.main_net ~= nil 判断, 缺数据时自然降级)
+    if (ff && !ff->date.empty()) {
+        lua_pushnumber(L_, ff->mainNet / 1e4);  lua_setfield(L_, s_idx, "main_net");   // 万元
+        lua_pushnumber(L_, ff->mainPct);        lua_setfield(L_, s_idx, "main_pct");   // %
+        lua_pushnumber(L_, ff->superNet / 1e4); lua_setfield(L_, s_idx, "super_net");
+        lua_pushnumber(L_, ff->bigNet / 1e4);   lua_setfield(L_, s_idx, "big_net");
+        lua_pushnumber(L_, ff->midNet / 1e4);   lua_setfield(L_, s_idx, "mid_net");
+        lua_pushnumber(L_, ff->smallNet / 1e4); lua_setfield(L_, s_idx, "small_net");
+        lua_pushstring(L_, ff->date.c_str());   lua_setfield(L_, s_idx, "ff_date");
     }
 
     // 调用 on_scan(s)

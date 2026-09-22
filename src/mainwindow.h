@@ -114,6 +114,14 @@ private:
     std::vector<StrategyParam> currentStrategyParams() const;
     void fillScanTable();
 
+    // --- 资金流页 (当日全市场资金流, 东财口径) ---
+    void buildFundFlowPage();                 // 组装"资金流"标签页
+    void updateFundFlow();                    // 抓取当日全市场资金流并落库(fundflow.db)
+    void reloadFundFlow();                    // 从库读入 ffAll_ 并刷新界面
+    void fillFundFlowTable();                 // 按筛选条件填表
+    void exportFundFlowCsv();                 // 导出当前(筛选后)结果为 CSV
+    std::vector<FundFlowDay> fundFlowFiltered() const;
+
     // --- 数据 ---
     class QPushButton* btnUpdate_ = nullptr;
     QTableWidget* table_ = nullptr;
@@ -215,6 +223,19 @@ private:
     class QStackedWidget* resultStack_ = nullptr; // 四维体检页内的两个结果视图(个股体检/形态筛选)
     class QPushButton*  btnViewCheck_ = nullptr;  // 切到 个股体检
     class QPushButton*  btnViewScan_ = nullptr;   // 切到 形态筛选
+
+    // 资金流页 (当日全市场资金流)
+    class QWidget*        ffPage_ = nullptr;
+    QTableWidget*         ffTable_ = nullptr;
+    class QPushButton*    ffUpdateBtn_ = nullptr;
+    class QPushButton*    ffExportBtn_ = nullptr;
+    class QPushButton*    ffWatchBtn_ = nullptr;
+    class QLabel*         ffInfo_ = nullptr;
+    class QCheckBox*      ffOnlyInflow_ = nullptr;
+    class QDoubleSpinBox* ffMinNet_ = nullptr;      // 主力净流入 >= (亿)
+    class QDoubleSpinBox* ffMinPct_ = nullptr;      // 主力净占比 >= (%)
+    class QDoubleSpinBox* ffMaxChg_ = nullptr;      // 涨幅 <= (%)
+    std::vector<FundFlowDay> ffAll_;                // 库中该日全部资金流(降序)
 
     Engine engine_;
     bool engineReady_ = false;

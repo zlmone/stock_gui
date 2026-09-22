@@ -103,7 +103,11 @@ public:
 
     // 用最近30根K线做一次筛选; rps>0 时注入 s.rps(全市场相对强度百分位),
     // 供策略做横截面过滤 —— 单只股票自己算不出这个值, 必须由引擎从全市场算好传入。
-    ScanResult test(const std::vector<Bar>& bars, double rps = 0.0);
+    // ff: 可选的"当日资金流"(由 netclient 抓取落库 fundflow.db, 调用方读好后传进来);
+    //     非空且 date 非空时注入 s.main_net/s.main_pct/s.super_net/s.big_net/s.mid_net/
+    //     s.small_net(单位: 万元) 与 s.ff_date, 供脚本做"主力净流入>X 且涨幅温和"这类选股。
+    ScanResult test(const std::vector<Bar>& bars, double rps = 0.0,
+                    const FundFlowDay* ff = nullptr);
 
 private:
     lua_State* L_ = nullptr;

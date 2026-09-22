@@ -71,3 +71,33 @@ struct Quote {
 };
 // 批量拉取实时行情; codes 为 6 位代码列表。失败的代码不会出现在结果里。
 QVector<Quote> fetchQuotes(const QStringList& codes);
+
+// ==================== 当日全市场资金流 (东财资金流排行) ====================
+// 数据源: 东财资金流排行 (push2 镜像 api/qt/clist/get, fid=f62, fs=沪深京A股)
+//   一次请求 100 只, 全市场约 5900 只 = 60 页, 约 20-40 秒(实测 82.push2 镜像 60 页 22 秒零失败;
+//   裸域名 push2.eastmoney.com 会被限流, 故代码里默认走镜像 + 失败换域名重试)。口径为"当日":
+//     f62 = 主力净流入(元)   f184 = 主力净占比(%)   f66 = 超大单净额
+//     f72 = 大单净额         f78  = 中单净额         f84 = 小单净额
+//   注: 主力净流入 = 超大单 + 大单; 净占比 = 净额 / 成交额, 光看净额会被大市值股刷屏。
+// 落库: fundflow.db 表 fundflow_daily(code,date,name,close,change_pct,main_net,main_pct,
+//                                     super_net,big_net,mid_net,small_net, PRIMARY KEY(code,date))
+//   金额单位为元; 界面/脚本惯用"亿"/"万元", 自行换算。
+//   结构体 FundFlowDay 定义在 engine.h(引擎/策略层共用, 避免循环依赖)
+
+// 6 位代码 -> 带后缀(与 toTencentCode/fromTencentCode 同规则; 北交所 4/8/920)
+QString codeWithSuffix(const QString& bare6);
+
+// 更新"当日"全市场资金流并落库
+//   force=false 时, 若库里已有当天数据直接返回 2(不重复打接口)
+//   返回: 0=失败 1=成功 2=已是最新
+int updateFundFlowToday(const QString& dbPath, bool force,
+                        const std::function<void(int, int)>& progress,
+                        QString* err, bool verbose = false);
+
+// 读取某日全市场资金流, 按主力净流入降序; date 为空=取库中最新日期
+//   limit > 0 只取前 N 条; outDate 可空, 返回实际使用的日期
+std::vector<FundFlowDay> loadFundFlow(const QString& dbPath, const QString& date,
+                                      int limit, QString* outDate);
+
+// 读某只股票在库中的最新一条资金流(带后缀代码); 无数据时 date 为空
+FundFlowDay fundFlowOf(const QString& dbPath, const QString& code);
