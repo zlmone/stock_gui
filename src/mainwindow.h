@@ -59,6 +59,7 @@ private slots:
     void loadNewsView(const QString& category);  // 按分类从缓存刷新新闻表
     void onNewsRowActivated(int row);        // 双击列表行 -> 打开本地阅读器(离线可读)
     void showNewsReader(const NewsItem& it); // 本地新闻阅读器: 显示已缓存正文, 可在线补抓全文
+    void openNewsHtmlLocal(const NewsItem& it); // 把正文渲染成本地 HTML, 用系统浏览器打开(离线可看)
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
                                     int timeoutMs, QString* err);  // 单 feed 同步拉取
 
@@ -153,6 +154,7 @@ private:
     class QComboBox*    newsFilter_ = nullptr;
     class QPushButton*  btnUpdateNews_ = nullptr;
     class QComboBox*    newsInterval_ = nullptr;
+    class QComboBox*    newsOpenMode_ = nullptr;  // 双击打开方式: 程序内 / 本地浏览器 / 网上浏览
     class QTimer*       newsTimer_ = nullptr;
     QNetworkAccessManager* newsNM_ = nullptr;
 

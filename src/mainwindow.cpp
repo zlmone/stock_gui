@@ -55,6 +55,9 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QGuiApplication>
 #include <QCloseEvent>
 #include <QDate>
+#include <QFile>
+#include <QDir>
+#include <QFileInfo>
 
 // 带数值的表格项: 点表头排序时按数值比较(而非字符串), 如 "+20.3%" vs "-2.4%"
 class NumericItem : public QTableWidgetItem {
@@ -374,6 +377,25 @@ void MainWindow::buildUI() {
         if (mins > 0) { newsTimer_->start(mins * 60 * 1000); status_->setText(QStringLiteral("定时刷新: 每 %1 分钟自动更新").arg(mins)); }
         else { newsTimer_->stop(); status_->setText(QStringLiteral("定时刷新: 已关闭")); }
     });
+    newsCtl->addWidget(new QLabel(QStringLiteral("双击打开: ")));
+    newsOpenMode_ = new QComboBox();
+    newsOpenMode_->addItem(QStringLiteral("程序内阅读"), 0);
+    newsOpenMode_->addItem(QStringLiteral("本地浏览器"), 1);
+    newsOpenMode_->addItem(QStringLiteral("网上浏览"), 2);
+    newsOpenMode_->setToolTip(QStringLiteral(
+        "程序内阅读: 弹窗看本地缓存的正文(离线可读)\n"
+        "本地浏览器: 把正文写成本地 HTML, 用系统浏览器打开(离线可读)\n"
+        "网上浏览: 打开新闻原网页(需要联网)"));
+    {
+        QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+        int m = st.value(QStringLiteral("news/openMode"), 0).toInt();
+        newsOpenMode_->setCurrentIndex((m >= 0 && m <= 2) ? m : 0);
+    }
+    connect(newsOpenMode_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+        st.setValue(QStringLiteral("news/openMode"), idx);
+    });
+    newsCtl->addWidget(newsOpenMode_);
     newsCtl->addStretch();
     newsLay->addLayout(newsCtl);
     newsTable_ = new QTableWidget();
@@ -2213,7 +2235,16 @@ void MainWindow::onNewsRowActivated(int row) {
     it.title = t->text().toStdString();
     if (newsTable_->item(row, 1)) it.source = newsTable_->item(row, 1)->text().toStdString();
     if (newsTable_->item(row, 2)) it.category = newsTable_->item(row, 2)->text().toStdString();
-    showNewsReader(it);   // 双击打开本地阅读器(离线可读), 不再直接丢给浏览器
+
+    // 按"双击打开"选项分发 (默认 0=程序内阅读, 离线可读)
+    int mode = newsOpenMode_ ? newsOpenMode_->currentData().toInt() : 0;
+    if (mode == 2) {                       // 网上浏览: 打开原网页
+        if (!it.link.empty()) QDesktopServices::openUrl(QUrl(QString::fromStdString(it.link)));
+    } else if (mode == 1) {                // 本地浏览器: 写本地 HTML 再交给系统浏览器
+        openNewsHtmlLocal(it);
+    } else {                               // 程序内阅读
+        showNewsReader(it);
+    }
 }
 
 // 本地新闻阅读器: 正文取自 SQLite 缓存, 因此断网也能看。
@@ -2255,9 +2286,11 @@ void MainWindow::showNewsReader(const NewsItem& src) {
 
     auto* row = new QHBoxLayout();
     auto* btnFetch = new QPushButton(QStringLiteral("抓取全文(需联网)"));
-    auto* btnOpen  = new QPushButton(QStringLiteral("在浏览器打开"));
+    auto* btnLocal = new QPushButton(QStringLiteral("本地浏览器打开"));
+    auto* btnOpen  = new QPushButton(QStringLiteral("网上浏览"));
     auto* btnClose = new QPushButton(QStringLiteral("关闭"));
     row->addWidget(btnFetch);
+    row->addWidget(btnLocal);
     row->addWidget(btnOpen);
     row->addStretch(1);
     row->addWidget(btnClose);
@@ -2276,6 +2309,9 @@ void MainWindow::showNewsReader(const NewsItem& src) {
     showBody(it.content);
 
     connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(btnLocal, &QPushButton::clicked, [&]() {
+        openNewsHtmlLocal(it);   // 写成本地 HTML 交给系统浏览器, 离线可看
+    });
     connect(btnOpen, &QPushButton::clicked, [&]() {
         if (!it.link.empty()) QDesktopServices::openUrl(QUrl(QString::fromStdString(it.link)));
     });
@@ -2303,4 +2339,85 @@ void MainWindow::showNewsReader(const NewsItem& src) {
     });
 
     dlg.exec();
+}
+
+// 把一条新闻渲染成本地 HTML 文件, 再用系统默认浏览器打开 —— 断网也能看。
+// 文件写在 news.db 同目录的 news_html/ 下, 按标题命名(同一条重复打开会覆盖更新)。
+void MainWindow::openNewsHtmlLocal(const NewsItem& src) {
+    QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
+    NewsItem it = loadNewsItem(dbPath.toStdString(), src.link);
+    if (it.link.empty()) it = src;   // 库里查不到时退回列表上的信息
+
+    QString bodyText = QString::fromStdString(it.content).trimmed();
+    if (bodyText.isEmpty()) bodyText = QString::fromStdString(it.description).trimmed();
+
+    auto esc = [](const QString& s) {
+        QString o = s;
+        o.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
+        o.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
+        o.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
+        return o;
+    };
+
+    QString paras;
+    const QStringList lines = bodyText.split(QLatin1Char('\n'));
+    for (const QString& line : lines) {
+        QString p = line.trimmed();
+        if (!p.isEmpty()) paras += QStringLiteral("<p>%1</p>\n").arg(esc(p));
+    }
+    if (paras.isEmpty())
+        paras = QStringLiteral("<p class=\"muted\">(本地暂无正文) —— 请先在阅读器里点一次"
+                               "「抓取全文(需联网)」, 之后就能离线阅读了。</p>");
+
+    QString when = it.epoch > 0
+        ? QDateTime::fromSecsSinceEpoch(it.epoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+        : QStringLiteral("时间未知");
+    QString link = QString::fromStdString(it.link);
+    QString head = esc(QString::fromStdString(it.title));
+
+    QString html = QStringLiteral(
+        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+        "<title>%1</title><style>"
+        "body{max-width:820px;margin:32px auto;padding:0 18px;color:#222;line-height:1.75;"
+        "font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;}"
+        "h1{font-size:24px;line-height:1.4;margin:0 0 10px;}"
+        ".meta{color:#888;font-size:13px;margin-bottom:22px;}"
+        "p{margin:0 0 14px;font-size:16px;}"
+        ".muted{color:#999;}"
+        ".foot{margin-top:34px;padding-top:14px;border-top:1px solid #eee;font-size:13px;}"
+        "a{color:#0a66c2;}"
+        "</style></head><body>"
+        "<h1>%1</h1>"
+        "<div class=\"meta\">%2 · %3 · %4 · 本地离线副本</div>"
+        "%5"
+        "<div class=\"foot\">原文: <a href=\"%6\">%6</a></div>"
+        "</body></html>\n")
+        .arg(head,
+             esc(when),
+             esc(QString::fromStdString(it.source)),
+             esc(QString::fromStdString(it.category)),
+             paras,
+             esc(link));
+
+    QDir dir(QFileInfo(dbPath).absolutePath() + QStringLiteral("/news_html"));
+    if (!dir.exists()) QDir().mkpath(dir.absolutePath());
+
+    QString name = QString::fromStdString(it.title).trimmed();
+    if (name.isEmpty()) name = QStringLiteral("news");
+    const QString bad = QStringLiteral("\\/:*?\"<>|\r\n\t");
+    for (int i = 0; i < name.size(); ++i)
+        if (bad.contains(name.at(i))) name[i] = QLatin1Char('_');
+    if (name.size() > 60) name = name.left(60) ;
+
+    QString file = dir.absoluteFilePath(name + QStringLiteral(".html"));
+    QFile f(file);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, QStringLiteral("本地浏览"),
+            QStringLiteral("无法写入本地 HTML 文件:\n%1").arg(file));
+        return;
+    }
+    f.write(html.toUtf8());
+    f.close();
+    QDesktopServices::openUrl(QUrl::fromLocalFile(file));
+    if (status_) status_->setText(QStringLiteral("已生成本地副本并用浏览器打开: %1").arg(file));
 }
