@@ -71,6 +71,7 @@ private slots:
     void watchImportFromCodes();  // 用【股票代码】框里的股票
     void watchImportFromTable();  // 用当前【四维体检】结果里的股票
     void watchImportFromSelection(); // 只用【四维体检】表里选中的行
+    void watchShowDetail();       // 打开盯盘表里选中那行的个股详情
     void openNewsHtmlLocal(const NewsItem& it); // 把正文渲染成本地 HTML, 用系统浏览器打开(离线可看)
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
                                     int timeoutMs, QString* err);  // 单 feed 同步拉取

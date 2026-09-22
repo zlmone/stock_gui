@@ -701,6 +701,11 @@ void MainWindow::buildUI() {
         bImpSel->setToolTip(QStringLiteral("只把【四维体检】表里当前选中的行加入盯盘(按住 Ctrl/Shift 可多选)"));
         connect(bImpSel, &QPushButton::clicked, this, &MainWindow::watchImportFromSelection);
         crow->addWidget(bImpSel);
+
+        auto* bDetail = new QPushButton(QStringLiteral("查看详情"));
+        bDetail->setToolTip(QStringLiteral("打开盯盘表里选中那行的个股详情(双击行也可以)"));
+        connect(bDetail, &QPushButton::clicked, this, &MainWindow::watchShowDetail);
+        crow->addWidget(bDetail);
         crow->addStretch();
         wl->addLayout(crow);
 
@@ -720,6 +725,13 @@ void MainWindow::buildUI() {
         watchTable_->verticalHeader()->setVisible(false);
         watchTable_->horizontalHeader()->setStretchLastSection(true);
         watchTable_->setSortingEnabled(false);
+        watchTable_->setToolTip(QStringLiteral("双击某一行查看该股的完整详情"));
+        connect(watchTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+            if (!watchTable_) return;
+            QTableWidgetItem* it = watchTable_->item(row, 0);
+            if (!it || it->text().isEmpty()) return;
+            showStockDetailByCode(it->text().toStdString());
+        });
         wl->addWidget(watchTable_, 1);
 
         // 自动检测定时器(默认 1 分钟)
@@ -3101,4 +3113,24 @@ void MainWindow::watchTick() {
                  ? QStringLiteral(" (有 %1 只没取到行情)").arg(watchCodes_.size() - rows.size())
                  : QString()));
     }
+}
+
+// 打开盯盘表里选中那行的个股详情(与体检表双击看到的是同一个弹窗)
+void MainWindow::watchShowDetail() {
+    if (!watchTable_ || watchTable_->rowCount() == 0) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 表里还没有股票"));
+        return;
+    }
+    int row = watchTable_->currentRow();
+    if (row < 0 && watchTable_->selectionModel()) {
+        const QModelIndexList sel = watchTable_->selectionModel()->selectedRows();
+        if (!sel.isEmpty()) row = sel.first().row();
+    }
+    if (row < 0 || row >= watchTable_->rowCount()) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 请先点一行选中股票, 再点【查看详情】"));
+        return;
+    }
+    QTableWidgetItem* it = watchTable_->item(row, 0);
+    if (!it || it->text().isEmpty()) return;
+    showStockDetailByCode(it->text().toStdString());
 }
