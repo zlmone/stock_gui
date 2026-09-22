@@ -1,5 +1,5 @@
 // news.h — 财经新闻采集核心 (纯逻辑, 无 Qt / 无网络, 便于单元测试)
-// 职责: 解析 RSS2.0 / Atom / GoogleNews 源, 按 link 去重, SQLite 缓存
+// 职责: 解析 RSS2.0 / Atom / GoogleNews / 国内 JSON 源, 抽正文, 按 link 去重, SQLite 缓存
 // GUI 层 (mainwindow) 负责网络拉取 + 显示; 本文件只处理 "字节 -> 条目 -> 库"
 #pragma once
 #include <string>
@@ -11,6 +11,7 @@ struct NewsItem {
     std::string source;     // 来源名 (来自 feed, 不含 Google News 标题里的 "- 源")
     std::string category;   // 分类: 国内 / 国际 / 宏观 / 个股
     std::string description;// 摘要 (可能含 HTML)
+    std::string content;    // 正文/快讯全文 (离线阅读用); 来自 feed 字段或抓取的详情页
     long long epoch = 0;    // 发布时间的 unix 秒, 0=未知 (排序时放末尾)
 };
 
@@ -55,3 +56,12 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items);
 std::vector<NewsItem> loadNews(const std::string& dbPath, const std::string& categoryFilter = "");
 //   searchNews: 在缓存中按关键词检索标题/摘要/来源/分类 (用于"个股相关推荐")
 std::vector<NewsItem> searchNews(const std::string& dbPath, const std::string& keyword, int limit = 30);
+//   updateNewsContent: 把抓取到的正文写回指定 link 的条目 (仅当比已有正文更长时覆盖), 返回是否更新
+int updateNewsContent(const std::string& dbPath, const std::string& link, const std::string& content);
+
+//   loadNewsItem: 按 link 读取单条(含正文), 供本地阅读器使用
+NewsItem loadNewsItem(const std::string& dbPath, const std::string& link);
+
+// 从文章 HTML 中尽力抽取正文纯文本 (去脚本/样式/标签, 按 <p> 收集段落)。
+// 无法抽取(如需要 JS 渲染的页面)时返回空串 —— 调用方应保留原有正文。
+std::string extractArticleText(const std::string& html);

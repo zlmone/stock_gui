@@ -452,6 +452,76 @@ struct JsonParser {
     }
 };
 
+// 去 HTML 标签 + 实体, 并把连续空白折叠成单空格 (用于把含 HTML 的正文变成可读纯文本)
+static std::string stripTags(const std::string& s) {
+    std::string o; o.reserve(s.size());
+    bool inTag = false;
+    for (size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (inTag) { if (c == '>') inTag = false; continue; }
+        if (c == '<') { inTag = true; o += ' '; continue; }
+        o += c;
+    }
+    o = decodeEntities(o);
+    std::string r; r.reserve(o.size());
+    bool ws = false;
+    for (char c : o) {
+        if (c==' '||c=='\t'||c=='\n'||c=='\r') { if (!ws) { r += ' '; ws = true; } }
+        else { r += c; ws = false; }
+    }
+    size_t a = 0; while (a < r.size() && r[a] == ' ') a++;
+    size_t b = r.size(); while (b > a && r[b-1] == ' ') b--;
+    return r.substr(a, b - a);
+}
+
+// 从文章 HTML 尽力抽取正文纯文本: 去脚本/样式/注释, 再按 <p> 收集段落。
+// 需要 JS 渲染的页面(如财联社详情页)会返回空串 —— 调用方应保留原有正文。
+std::string extractArticleText(const std::string& html) {
+    std::string h; h.reserve(html.size());
+    size_t i = 0;
+    while (i < html.size()) {
+        if (html.compare(i, 7, "<script") == 0) {
+            size_t e = html.find("</script", i);
+            i = (e == std::string::npos) ? html.size() : html.find('>', e) + 1;
+            if (i == 0 || i > html.size()) i = html.size();
+            h += ' '; continue;
+        }
+        if (html.compare(i, 6, "<style") == 0) {
+            size_t e = html.find("</style", i);
+            i = (e == std::string::npos) ? html.size() : html.find('>', e) + 1;
+            if (i == 0 || i > html.size()) i = html.size();
+            h += ' '; continue;
+        }
+        if (html.compare(i, 4, "<!--") == 0) {
+            size_t e = html.find("-->", i);
+            i = (e == std::string::npos) ? html.size() : e + 3;
+            h += ' '; continue;
+        }
+        h += html[i++];
+    }
+    std::vector<std::string> paras;
+    size_t pos = 0;
+    while (true) {
+        size_t o = h.find("<p", pos);
+        while (o != std::string::npos) {
+            char n = (o + 2 < h.size()) ? h[o + 2] : '>';
+            if (n == '>' || n == ' ' || n == '\t' || n == '\n' || n == '\r') break;
+            o = h.find("<p", o + 2);
+        }
+        if (o == std::string::npos) break;
+        size_t gt = h.find('>', o);
+        if (gt == std::string::npos) break;
+        size_t c = h.find("</p", gt);
+        if (c == std::string::npos) break;
+        std::string seg = stripTags(h.substr(gt + 1, c - gt - 1));
+        if (seg.size() >= 8) paras.push_back(seg);
+        pos = c + 3;
+    }
+    std::string out;
+    for (auto& p : paras) { if (!out.empty()) out += '\n'; out += p; }
+    return out;
+}
+
 static long long epochFrom(const JsonValue* f){
     if(!f) return 0;
     if(f->type == JsonValue::Num) return (long long)f->num;
@@ -511,6 +581,17 @@ std::vector<NewsItem> parseJsonFeed(const std::string& body, const std::string& 
             else if(idv && idv->type==JsonValue::Num) ids = std::to_string((long long)idv->num);
             if(!ids.empty()) it.link = "https://www.cls.cn/detail/" + ids;
         }
+        // 正文(离线阅读用): 取长度最大的内容类字段 ——
+        //   财联社 content / 见闻 content_text / 东财 summary / 新浪 intro
+        // 若该字段本身是 HTML(见闻的 content)则去标签。
+        static const char* ckeys[] = {"content_text","content","brief","summary","intro","digest","text","description", nullptr};
+        std::string cbody;
+        for(int i=0; ckeys[i]; i++){
+            const JsonValue* f=item.find(ckeys[i]);
+            if(f && f->type==JsonValue::Str && f->sval.size() > cbody.size()) cbody = f->sval;
+        }
+        if(cbody.find('<') != std::string::npos) cbody = stripTags(cbody);
+        it.content = cbody;
         long long ep=0;
         for(int i=0; kkeys[i]; i++){ ep=epochFrom(item.find(kkeys[i])); if(ep>0) break; }
         while(ep>1000000000000LL) ep/=1000;   // 毫秒->秒 (如 wallstcn display_time)
@@ -527,6 +608,7 @@ std::vector<NewsItem> collectItems(const std::string& body, const std::string& s
 
 // ===================== SQLite 存储 =========================
 static void ensureSchema(sqlite3* db) {
+    // content 列为后加字段(离线阅读用), 老库靠下面的 ALTER 补列
     const char* sql =
         "CREATE TABLE IF NOT EXISTS news_items("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -535,6 +617,7 @@ static void ensureSchema(sqlite3* db) {
         "  source TEXT,"
         "  category TEXT,"
         "  description TEXT,"
+        "  content TEXT,"
         "  epoch INTEGER);"
         "CREATE INDEX IF NOT EXISTS idx_news_cat ON news_items(category);"
         "CREATE INDEX IF NOT EXISTS idx_news_epoch ON news_items(epoch DESC);"
@@ -542,6 +625,8 @@ static void ensureSchema(sqlite3* db) {
     char* err = nullptr;
     sqlite3_exec(db, sql, nullptr, nullptr, &err);
     if (err) sqlite3_free(err);
+    // 老库迁移: 补 content 列 (列已存在时会失败, 忽略即可)
+    sqlite3_exec(db, "ALTER TABLE news_items ADD COLUMN content TEXT", nullptr, nullptr, nullptr);
 }
 
 static const char* col(sqlite3_stmt* st, int i) {
@@ -567,10 +652,19 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items) {
     // 用 OR REPLACE 而非 OR IGNORE: 同一 link 再次抓到时会刷新 title/时间等字段.
     // 否则旧版本因解析器缺陷写进库的空标题会因"去重跳过"而永远留在缓存里,
     // 即使解析器已经修好, 界面上依然显示无标题.
+    // UPSERT: 同一 link 再次抓到会刷新标题/时间等(自愈旧数据), 但 content
+    // 只在"新内容更长"时才覆盖 —— 否则每次刷新拿到的较短 feed 摘要会把已经
+    // 抓到的详情页全文冲掉, 离线阅读就白存了。
     sqlite3_stmt* ins = nullptr;
     if (sqlite3_prepare_v2(db,
-        "INSERT OR REPLACE INTO news_items(link,title,source,category,description,epoch) "
-        "VALUES(?,?,?,?,?,?)", -1, &ins, nullptr) != SQLITE_OK) {
+        "INSERT INTO news_items(link,title,source,category,description,content,epoch) "
+        "VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(link) DO UPDATE SET "
+        "  title=excluded.title, source=excluded.source, category=excluded.category, "
+        "  description=excluded.description, epoch=excluded.epoch, "
+        "  content=CASE WHEN length(excluded.content) > length(COALESCE(news_items.content,'')) "
+        "               THEN excluded.content ELSE news_items.content END",
+        -1, &ins, nullptr) != SQLITE_OK) {
         sqlite3_close(db);
         return 0;
     }
@@ -580,7 +674,8 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items) {
         sqlite3_bind_text(ins, 3, it.source.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(ins, 4, it.category.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(ins, 5, it.description.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(ins, 6, (sqlite3_int64)it.epoch);
+        sqlite3_bind_text(ins, 6, it.content.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(ins, 7, (sqlite3_int64)it.epoch);
         sqlite3_step(ins);
         sqlite3_reset(ins);
         sqlite3_clear_bindings(ins);
@@ -607,10 +702,10 @@ std::vector<NewsItem> loadNews(const std::string& dbPath, const std::string& cat
     std::string sql;
     sqlite3_stmt* st = nullptr;
     if (categoryFilter.empty()) {
-        sql = "SELECT link, title, source, category, description, epoch "
+        sql = "SELECT link, title, source, category, description, content, epoch "
               "FROM news_items ORDER BY epoch DESC, id DESC LIMIT 500";
     } else {
-        sql = "SELECT link, title, source, category, description, epoch "
+        sql = "SELECT link, title, source, category, description, content, epoch "
               "FROM news_items WHERE category=?1 "
               "ORDER BY epoch DESC, id DESC LIMIT 500";
     }
@@ -627,7 +722,8 @@ std::vector<NewsItem> loadNews(const std::string& dbPath, const std::string& cat
         it.source = col(st, 2);
         it.category = col(st, 3);
         it.description = col(st, 4);
-        it.epoch = (long long)sqlite3_column_int64(st, 5);
+        it.content = col(st, 5);
+        it.epoch = (long long)sqlite3_column_int64(st, 6);
         out.push_back(it);
     }
     sqlite3_finalize(st);
@@ -644,7 +740,7 @@ std::vector<NewsItem> searchNews(const std::string& dbPath, const std::string& k
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return out;
     const char* sql =
-        "SELECT link, title, source, category, description, epoch FROM news_items WHERE "
+        "SELECT link, title, source, category, description, content, epoch FROM news_items WHERE "
         "title LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\' OR "
         "source LIKE ?1 ESCAPE '\\' OR category LIKE ?1 ESCAPE '\\' "
         "ORDER BY epoch DESC, id DESC LIMIT ?";
@@ -661,10 +757,59 @@ std::vector<NewsItem> searchNews(const std::string& dbPath, const std::string& k
         it.source = col(st, 2);
         it.category = col(st, 3);
         it.description = col(st, 4);
-        it.epoch = (long long)sqlite3_column_int64(st, 5);
+        it.content = col(st, 5);
+        it.epoch = (long long)sqlite3_column_int64(st, 6);
         out.push_back(it);
     }
     sqlite3_finalize(st);
     sqlite3_close(db);
     return out;
+}
+
+// 把抓取到的正文写回指定 link 的条目; 只在比已有正文更长时才覆盖, 返回是否更新。
+int updateNewsContent(const std::string& dbPath, const std::string& link, const std::string& content) {
+    if (link.empty() || content.empty()) return 0;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) return 0;
+    ensureSchema(db);
+    int changed = 0;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "UPDATE news_items SET content=?1 "
+        "WHERE link=?2 AND length(?1) > length(COALESCE(content,''))",
+        -1, &st, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, content.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, link.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_step(st);
+        changed = sqlite3_changes(db);
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+    return changed;
+}
+
+// 按 link 读取单条完整记录 (含正文), 供本地阅读器使用; 找不到时返回空 link 的条目。
+NewsItem loadNewsItem(const std::string& dbPath, const std::string& link) {
+    NewsItem it;
+    if (link.empty()) return it;
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return it;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db,
+        "SELECT link, title, source, category, description, content, epoch "
+        "FROM news_items WHERE link=?1 LIMIT 1", -1, &st, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, link.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            it.link = col(st, 0);
+            it.title = col(st, 1);
+            it.source = col(st, 2);
+            it.category = col(st, 3);
+            it.description = col(st, 4);
+            it.content = col(st, 5);
+            it.epoch = (long long)sqlite3_column_int64(st, 6);
+        }
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+    return it;
 }

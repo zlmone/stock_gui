@@ -1214,8 +1214,12 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
             if (row < 0) return;
             QTableWidgetItem* t = newsTable->item(row, 3);
             if (!t) return;
-            QString url = t->data(Qt::UserRole).toString();
-            if (!url.isEmpty()) QDesktopServices::openUrl(QUrl(url));
+            NewsItem it;
+            it.link = t->data(Qt::UserRole).toString().toStdString();
+            it.title = t->text().toStdString();
+            if (newsTable->item(row, 1)) it.source = newsTable->item(row, 1)->text().toStdString();
+            if (newsTable->item(row, 2)) it.category = newsTable->item(row, 2)->text().toStdString();
+            showNewsReader(it);   // 个股相关新闻同样走本地阅读器(离线可读)
         });
         if (rows.empty())
             status_->setText(QStringLiteral("%1: no related news cached, click [Update] to fetch.")
@@ -2157,9 +2161,102 @@ void MainWindow::loadNewsView(const QString& category) {
 }
 
 void MainWindow::onNewsRowActivated(int row) {
-    if (row < 0 || row >= newsTable_->rowCount()) return;
+    if (!newsTable_ || row < 0 || row >= newsTable_->rowCount()) return;
     QTableWidgetItem* t = newsTable_->item(row, 3);
     if (!t) return;
-    QString url = t->data(Qt::UserRole).toString();
-    if (!url.isEmpty()) QDesktopServices::openUrl(QUrl(url));
+    NewsItem it;
+    it.link = t->data(Qt::UserRole).toString().toStdString();
+    it.title = t->text().toStdString();
+    if (newsTable_->item(row, 1)) it.source = newsTable_->item(row, 1)->text().toStdString();
+    if (newsTable_->item(row, 2)) it.category = newsTable_->item(row, 2)->text().toStdString();
+    showNewsReader(it);   // 双击打开本地阅读器(离线可读), 不再直接丢给浏览器
+}
+
+// 本地新闻阅读器: 正文取自 SQLite 缓存, 因此断网也能看。
+// 「抓取全文」会联网拉原文页并抽取正文, 成功后写回缓存, 之后即可离线阅读。
+void MainWindow::showNewsReader(const NewsItem& src) {
+    QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
+    NewsItem it = loadNewsItem(dbPath.toStdString(), src.link);
+    if (it.link.empty()) it = src;   // 库里查不到时退回列表上的信息
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("新闻阅读 — %1").arg(QString::fromStdString(it.source)));
+    dlg.resize(880, 680);
+    auto* lay = new QVBoxLayout(&dlg);
+
+    auto* head = new QLabel(QString::fromStdString(it.title));
+    head->setWordWrap(true);
+    QFont hf = head->font();
+    hf.setBold(true);
+    hf.setPointSize(hf.pointSize() + 2);
+    head->setFont(hf);
+    lay->addWidget(head);
+
+    QString when = it.epoch > 0
+        ? QDateTime::fromSecsSinceEpoch(it.epoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+        : QStringLiteral("时间未知");
+    auto* sub = new QLabel(QStringLiteral("%1 · %2 · %3").arg(when)
+        .arg(QString::fromStdString(it.source)).arg(QString::fromStdString(it.category)));
+    sub->setStyleSheet(QStringLiteral("color:#777;"));
+    lay->addWidget(sub);
+
+    auto* body = new QTextBrowser();
+    body->setOpenExternalLinks(true);
+    lay->addWidget(body, 1);
+
+    auto* tip = new QLabel();
+    tip->setWordWrap(true);
+    tip->setStyleSheet(QStringLiteral("color:#888;"));
+    lay->addWidget(tip);
+
+    auto* row = new QHBoxLayout();
+    auto* btnFetch = new QPushButton(QStringLiteral("抓取全文(需联网)"));
+    auto* btnOpen  = new QPushButton(QStringLiteral("在浏览器打开"));
+    auto* btnClose = new QPushButton(QStringLiteral("关闭"));
+    row->addWidget(btnFetch);
+    row->addWidget(btnOpen);
+    row->addStretch(1);
+    row->addWidget(btnClose);
+    lay->addLayout(row);
+
+    auto showBody = [&](const std::string& c) {
+        QString t = QString::fromStdString(c).trimmed();
+        if (t.isEmpty()) {
+            body->setPlainText(QStringLiteral("(本地暂无正文)\n\n点「抓取全文(需联网)」联网取一次, 之后就能离线阅读; 或点「在浏览器打开」看原文。"));
+            tip->setText(QStringLiteral("该条目目前只缓存了标题。"));
+        } else {
+            body->setPlainText(t);
+            tip->setText(QStringLiteral("正文 %1 字, 已缓存在本地, 断网也能阅读。").arg(t.size()));
+        }
+    };
+    showBody(it.content);
+
+    connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(btnOpen, &QPushButton::clicked, [&]() {
+        if (!it.link.empty()) QDesktopServices::openUrl(QUrl(QString::fromStdString(it.link)));
+    });
+    connect(btnFetch, &QPushButton::clicked, [&]() {
+        if (it.link.empty()) { tip->setText(QStringLiteral("该条目没有原文链接, 无法抓取。")); return; }
+        if (!newsNM_) { tip->setText(QStringLiteral("网络模块未就绪。")); return; }
+        btnFetch->setEnabled(false);
+        tip->setText(QStringLiteral("正在抓取 %1 ...").arg(QString::fromStdString(it.link)));
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        QString err;
+        QByteArray html = fetchNewsFeed(*newsNM_, QString::fromStdString(it.link), 20000, &err);
+        QApplication::restoreOverrideCursor();
+        btnFetch->setEnabled(true);
+        if (html.isEmpty()) { tip->setText(QStringLiteral("抓取失败: %1").arg(err)); return; }
+        QByteArray u8 = convertToUtf8(html);
+        std::string txt = extractArticleText(std::string(u8.constData(), u8.size()));
+        if (txt.empty()) {
+            tip->setText(QStringLiteral("这个页面抽不出正文(可能是需要 JS 渲染的站点), 建议用「在浏览器打开」。"));
+            return;
+        }
+        updateNewsContent(dbPath.toStdString(), it.link, txt);
+        it.content = txt;
+        showBody(txt);
+        tip->setText(QStringLiteral("已抓取全文 %1 字并写入本地缓存, 之后断网也能阅读。").arg((int)txt.size()));
+    });
+
+    dlg.exec();
 }

@@ -57,7 +57,8 @@ private slots:
     // --- 新闻采集 ---
     void updateNews();                       // 抓取+解析+缓存全部源(联网, 带进度/离线记忆)
     void loadNewsView(const QString& category);  // 按分类从缓存刷新新闻表
-    void onNewsRowActivated(int row);        // 双击列表行 -> 浏览器打开原文
+    void onNewsRowActivated(int row);        // 双击列表行 -> 打开本地阅读器(离线可读)
+    void showNewsReader(const NewsItem& it); // 本地新闻阅读器: 显示已缓存正文, 可在线补抓全文
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
                                     int timeoutMs, QString* err);  // 单 feed 同步拉取
 
