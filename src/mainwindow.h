@@ -131,7 +131,9 @@ private:
     void saveCodeBoxToPool();                                 // 把代码框内容覆盖式存为默认池
     void showPoolManager();                                   // 池管理对话框
     void reloadPoolTable();                                   // 刷新池管理里的表
-    void attachTableContextMenu(QTableWidget* t, const QString& what);  // 结果表统一右键菜单
+    void attachTableContextMenu(QTableWidget* t, const QString& what, bool withTiers = false);  // 结果表统一右键菜单
+    int  fetchTiersFor(const QStringList& codes);      // 逐只补抓东财四档明细(1 请求/只)
+    bool fetchTiersForStock(const std::string& code);  // 单只(个股详情页用)
     QStringList tableSelectedCodes(QTableWidget* t) const;    // 选中行(无选中则当前行)的代码
 
     // --- 数据 ---

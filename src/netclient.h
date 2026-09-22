@@ -108,3 +108,14 @@ std::vector<FundFlowDay> loadFundFlow(const QString& dbPath, const QString& date
 
 // 读某只股票在库中的最新一条资金流(带后缀代码); 无数据时 date 为空
 FundFlowDay fundFlowOf(const QString& dbPath, const QString& code);
+
+// 单票"四档明细"补抓(东财 push2his /api/qt/stock/fflow/daykline/get)
+//   为什么单独一个接口: 批量接口(clist)提供四档, 但它按 IP 限流后**所有域名**都空回复;
+//   而这个单票接口是另一条路径, 实测限流期间仍然可用, 一次还顺带给 120+ 天的历史。
+//   days<=0 表示取全部(约 120 天); 只覆盖 主力/超大单/大单/中单/小单 与 src,
+//   已有的 现价/涨跌幅/主力净占比(可能来自新浪) 不会被抹掉。
+//   返回: 0=失败 1=成功(抓到并入库) 2=接口通但无该股数据
+int fetchFundFlowOne(const QString& dbPath, const QString& code, int days,
+                     QString* err, bool verbose = false);
+// 清掉"单票四档连续失败"的记忆(用户手动点【补齐四档】时调用, 给它一次重试机会)
+void fundFlowOneReset();

@@ -1502,3 +1502,129 @@ FundFlowDay fundFlowOf(const QString& dbPath, const QString& code) {
     sqlite3_close(db);
     return f;
 }
+
+// ---------- 单票四档明细 (东财 daykline; 限流期间仍可用) ----------
+// 返回体: data.klines = ["日期,主力净额,小单,中单,大单,超大单", ...]
+//   校验: 主力 = 大单 + 超大单 (实测吻合)
+// 单票四档也做个"连续失败就别再试了"的记忆: 详情页每次打开都会补一次,
+// 接口被限流时不能每次都让用户干等超时。
+static int g_ffOneFailures = 0;
+void fundFlowOneReset() { g_ffOneFailures = 0; }
+
+int fetchFundFlowOne(const QString& dbPath, const QString& code, int days,
+                     QString* err, bool verbose) {
+    err->clear();
+    if (g_ffOneFailures >= 2) {
+        *err = QStringLiteral("已跳过(连续失败, 稍后再试或点【补齐四档】重来)");
+        return 0;
+    }
+    const QString bare = QString(code).section('.', 0, 0).trimmed();
+    if (bare.isEmpty()) { *err = QStringLiteral("代码为空"); return 0; }
+    // 市场前缀: 沪市(6/9/5)=1, 其余(0/3/4/8/920)=0; 猜错会自动换另一个再试一次
+    const bool sh = bare.startsWith('6') || bare.startsWith('9') || bare.startsWith('5');
+    const QStringList markets = sh ? QStringList{ QStringLiteral("1"), QStringLiteral("0") }
+                                   : QStringList{ QStringLiteral("0"), QStringLiteral("1") };
+    const QStringList hosts = { QStringLiteral("push2his.eastmoney.com"),
+                                QStringLiteral("push2.eastmoney.com") };
+
+    QNetworkAccessManager mgr;
+    QJsonArray klines;
+    QString name;
+    QString lastWhy = QStringLiteral("无响应");
+    for (const QString& host : hosts) {
+        for (const QString& mk : markets) {
+            const QString url = QStringLiteral("http://%1/api/qt/stock/fflow/daykline/get"
+                                               "?lmt=%2&klt=101&secid=%3.%4"
+                                               "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56")
+                                    .arg(host).arg(days > 0 ? days : 0).arg(mk, bare);
+            QByteArray body; QString why;
+            if (!ffGet(mgr, url, &body, &why)) { lastWhy = why; continue; }
+            QJsonObject data = QJsonDocument::fromJson(body).object().value("data").toObject();
+            if (data.isEmpty()) { lastWhy = QStringLiteral("接口无数据"); continue; }
+            klines = data.value("klines").toArray();
+            name = data.value("name").toString();
+            if (!klines.isEmpty()) break;
+        }
+        if (!klines.isEmpty()) break;
+    }
+    if (klines.isEmpty()) {
+        g_ffOneFailures++;
+        *err = QStringLiteral("取四档失败: %1").arg(lastWhy);
+        ffLog(dbPath, QStringLiteral("FAIL tier %1: %2").arg(code, lastWhy));
+        return 0;
+    }
+    g_ffOneFailures = 0;
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open_v2(dbPath.toUtf8().constData(), &db,
+                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK) {
+        *err = QStringLiteral("打不开资金流库: ") + dbPath;
+        if (db) sqlite3_close(db);
+        return 0;
+    }
+    char* emsg = nullptr;
+    auto ex = [&](const char* sql) -> bool {
+        if (sqlite3_exec(db, sql, nullptr, nullptr, &emsg) != SQLITE_OK) {
+            *err = QStringLiteral("SQL错误: ") + (emsg ? emsg : "?");
+            if (emsg) sqlite3_free(emsg);
+            return false;
+        }
+        return true;
+    };
+    ex("CREATE TABLE IF NOT EXISTS fundflow_daily (code TEXT, date TEXT, name TEXT, close REAL,"
+       " change_pct REAL, main_net REAL, main_pct REAL, super_net REAL, big_net REAL,"
+       " mid_net REAL, small_net REAL, src TEXT, PRIMARY KEY(code, date))");
+    ex("ALTER TABLE fundflow_daily ADD COLUMN src TEXT");
+
+    // 合并式写入: 只覆盖 主力/四档/名称/src='em', 不动已有的 现价/涨跌幅/净占比
+    const char* sql = "INSERT INTO fundflow_daily"
+                      "(code,date,name,close,change_pct,main_net,main_pct,super_net,big_net,mid_net,small_net,src)"
+                      " VALUES(?,?,?,0,0,?,0,?,?,?,?,'em')"
+                      " ON CONFLICT(code,date) DO UPDATE SET"
+                      "  main_net=excluded.main_net,"
+                      "  super_net=excluded.super_net, big_net=excluded.big_net,"
+                      "  mid_net=excluded.mid_net, small_net=excluded.small_net,"
+                      "  name=CASE WHEN length(excluded.name)>0 THEN excluded.name ELSE fundflow_daily.name END,"
+                      "  src='em'";
+    if (!ex("BEGIN")) { sqlite3_close(db); return 0; }
+    sqlite3_stmt* ins = nullptr;
+    if (sqlite3_prepare_v2(db, sql, -1, &ins, nullptr) != SQLITE_OK) {
+        *err = QStringLiteral("准备写入失败: ") + sqlite3_errmsg(db);
+        ex("ROLLBACK");
+        sqlite3_close(db);
+        return 0;
+    }
+    const std::string codeKey = code.toStdString();
+    const std::string nameKey = name.toStdString();
+    int n = 0;
+    for (const QJsonValue& v : klines) {
+        const QString line = v.toString();          // 日期,主力,小单,中单,大单,超大单
+        const QStringList p = line.split(',');
+        if (p.size() < 6) continue;
+        const QString d = p.at(0).trimmed();
+        if (d.size() != 10) continue;
+        auto at = [&](int i) { return p.at(i).toDouble(); };
+        sqlite3_bind_text(ins, 1, codeKey.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 2, d.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(ins, 3, nameKey.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_double(ins, 4, at(1));         // 主力净额
+        sqlite3_bind_double(ins, 5, at(5));         // 超大单
+        sqlite3_bind_double(ins, 6, at(4));         // 大单
+        sqlite3_bind_double(ins, 7, at(3));         // 中单
+        sqlite3_bind_double(ins, 8, at(2));         // 小单
+        if (sqlite3_step(ins) == SQLITE_DONE) n++;
+        sqlite3_reset(ins);
+    }
+    sqlite3_finalize(ins);
+    if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, &emsg) != SQLITE_OK) {
+        *err = QStringLiteral("提交失败: ") + (emsg ? emsg : "?");
+        if (emsg) sqlite3_free(emsg);
+        ex("ROLLBACK");
+        sqlite3_close(db);
+        return 0;
+    }
+    sqlite3_close(db);
+    if (verbose) fprintf(stderr, "[ff] 四档 %s: %d 天入库\n", code.toUtf8().constData(), n);
+    if (n == 0) { *err = QStringLiteral("接口没有返回该股的四档数据"); return 2; }
+    return 1;
+}

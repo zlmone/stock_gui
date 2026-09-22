@@ -58,6 +58,7 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QDate>
 #include <QFile>
 #include <QDir>
+#include <QThread>
 #include <QFileInfo>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexerlua.h>
@@ -882,7 +883,7 @@ void MainWindow::buildUI() {
     attachTableContextMenu(table_,     QStringLiteral("【四维体检】结果表"));
     attachTableContextMenu(scanTable_, QStringLiteral("【形态筛选】结果表"));
     attachTableContextMenu(btTable_,   QStringLiteral("【策略】回测结果表"));
-    attachTableContextMenu(ffTable_,   QStringLiteral("【资金流】结果表"));
+    attachTableContextMenu(ffTable_,   QStringLiteral("【资金流】结果表"), true);
     attachTableContextMenu(watchTable_, QStringLiteral("【实时盯盘】表"));
     updatePoolButton();
 
@@ -1523,10 +1524,10 @@ QStringList MainWindow::tableSelectedCodes(QTableWidget* t) const {
 }
 
 // 结果表统一的右键菜单: 加池/移池/看详情/进盯盘 —— 表格之间行为一致, 不用记哪张表支持什么
-void MainWindow::attachTableContextMenu(QTableWidget* t, const QString& what) {
+void MainWindow::attachTableContextMenu(QTableWidget* t, const QString& what, bool withTiers) {
     if (!t) return;
     t->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(t, &QTableWidget::customContextMenuRequested, this, [this, t, what](const QPoint& pos) {
+    connect(t, &QTableWidget::customContextMenuRequested, this, [this, t, what, withTiers](const QPoint& pos) {
         QTableWidgetItem* hit = t->itemAt(pos);
         const int row = hit ? hit->row() : t->currentRow();
         if (row < 0 || row >= t->rowCount()) return;
@@ -1545,12 +1546,55 @@ void MainWindow::attachTableContextMenu(QTableWidget* t, const QString& what) {
         m.addSeparator();
         QAction* aDetail = m.addAction(QStringLiteral("查看详情"));
         QAction* aWatch  = m.addAction(QStringLiteral("加入实时盯盘"));
+        QAction* aTier   = nullptr;
+        if (withTiers) {
+            m.addSeparator();
+            aTier = m.addAction(QStringLiteral("补齐四档明细 (%1 只, 东财单票接口)").arg(codes.size()));
+            aTier->setToolTip(QStringLiteral("逐只抓 超大单/大单/中单/小单(每只 1 个请求, 顺带存 120 天历史)"));
+        }
         QAction* picked  = m.exec(t->viewport()->mapToGlobal(pos));
         if (picked == aAdd)        addCodesToPool(codes, what);
         else if (picked == aDel)   removeCodesFromPool(codes);
         else if (picked == aDetail) showStockDetailByCode(clicked.toStdString());
         else if (picked == aWatch)  watchImportFromResultTable(t, what);
+        else if (aTier && picked == aTier) fetchTiersFor(codes);
     });
+}
+
+// 逐只补抓东财四档明细(每只 1 个请求): 批量接口被限流时, 这是拿四档唯一可靠的路子。
+// 顺带把这些票近 120 天的资金流一起存进库(等于慢慢攒历史)。
+int MainWindow::fetchTiersFor(const QStringList& codes) {
+    if (codes.isEmpty()) return 0;
+    const QString dbp = QString::fromStdString(resolveDbPath("fundflow.db"));
+    fundFlowOneReset();            // 用户主动补抓, 给它一次重试机会
+    btnUpdate_->setEnabled(false);
+    progress_->setVisible(true);
+    progress_->setRange(0, codes.size());
+    int ok = 0, fail = 0;
+    QString firstErr;
+    for (int i = 0; i < codes.size(); i++) {
+        QString err;
+        const int r = fetchFundFlowOne(dbp, codes[i], 0, &err, false);
+        if (r == 1) ok++;
+        else { fail++; if (firstErr.isEmpty()) firstErr = QStringLiteral("%1: %2").arg(codes[i], err); }
+        progress_->setValue(i + 1);
+        status_->setText(QStringLiteral("补四档明细: %1/%2 ...").arg(i + 1).arg(codes.size()));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        if (i + 1 < codes.size()) QThread::msleep(150);      // 温柔一点
+    }
+    progress_->setVisible(false);
+    btnUpdate_->setEnabled(true);
+    reloadFundFlow();
+    status_->setText(fail == 0
+        ? QStringLiteral("四档明细补齐完成 ✓ %1 只 (已存库, 含近120天历史)").arg(ok)
+        : QStringLiteral("四档明细: 成功 %1 只 / 失败 %2 只 | 首个错误: %3").arg(ok).arg(fail).arg(firstErr));
+    return ok;
+}
+
+bool MainWindow::fetchTiersForStock(const std::string& code) {
+    const QString dbp = QString::fromStdString(resolveDbPath("fundflow.db"));
+    QString err;
+    return fetchFundFlowOne(dbp, QString::fromStdString(code), 0, &err, false) == 1;
 }
 
 void MainWindow::reloadPoolTable() {
@@ -2186,8 +2230,17 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
 
     // 当日资金流(东财口径, 读本地 fundflow.db —— 离线可看; 没抓过就提示去抓)
     {
-        FundFlowDay ffd = fundFlowOf(QString::fromStdString(resolveDbPath("fundflow.db")),
-                                     QString::fromStdString(code));
+        const QString ffdb = QString::fromStdString(resolveDbPath("fundflow.db"));
+        FundFlowDay ffd = fundFlowOf(ffdb, QString::fromStdString(code));
+        // 本地缺四档(或压根没这天的数据)时现抓一次东财单票接口 —— 1 个请求,
+        // 批量接口被限流也不影响这条路; 抓完顺带把这票近 120 天存进库。
+        bool liveFetched = false;
+        if (fundFlowOn_ && fundFlowOn_->isChecked() && (!ffd.ok() || !ffd.hasTiers())) {
+            if (fetchTiersForStock(code)) {
+                FundFlowDay f2 = fundFlowOf(ffdb, QString::fromStdString(code));
+                if (f2.ok()) { ffd = f2; liveFetched = true; }
+            }
+        }
         html += "<h3 style='margin:6px 4px'>当日资金流</h3>";
         if (ffd.ok()) {
             QString col = (ffd.mainNet >= 0) ? QStringLiteral("#c62828") : QStringLiteral("#2e7d32");
@@ -2216,13 +2269,14 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
                 .arg(tierTxt(ffd.superNet), tierTxt(ffd.bigNet),
                      tierTxt(ffd.midNet),   tierTxt(ffd.smallNet))
                 .arg(srcTxt,
-                     tiers ? QStringLiteral(", 净流入=超大单+大单")
-                           : QStringLiteral("(没有四档明细, 需切到东财源重抓)"));
+                     tiers ? (liveFetched ? QStringLiteral(", 净流入=超大单+大单 (四档已实时补抓并存库)")
+                                          : QStringLiteral(", 净流入=超大单+大单"))
+                           : QStringLiteral("(四档明细需联网抓一次)"));
             html += QStringLiteral("<table border='1' cellspacing='0' cellpadding='3' style='margin:2px'>")
                     + row1 + row2 + QStringLiteral("</table>");
         } else {
-            html += QString("<p style='margin:4px;color:#999'>本地无数据 —— 菜单 数据 → 更新当日资金流 抓一次"
-                            "(全市场约 1 分钟), 之后离线也能看</p>");
+            html += QString("<p style='margin:4px;color:#999'>本地无数据, 现抓也没抓到 —— 菜单 数据 → 更新当日资金流 "
+                            "抓一次(新浪源约 10 秒); 四档明细可在【资金流】页右键【补齐四档明细】</p>");
         }
     }
 
@@ -4283,7 +4337,8 @@ void MainWindow::fillFundFlowTable() {
                 : QString();
             const bool tiers = ffAll_.front().hasTiers();
             const QString srcTxt = tiers ? QStringLiteral("东财(含四档明细)")
-                                         : QStringLiteral("新浪(只有主力净额/净占比, 四档显示为 -; 日期按本机日期, 周末回退到周五)");
+                                         : QStringLiteral("新浪(只有主力净额/净占比, 四档显示为 -; 日期按本机日期, 周末回退到周五; "
+                                                          "要四档就在表里右键【补齐四档明细】, 逐只补, 不走批量接口)");
             ffInfo_->setText(QStringLiteral("数据源 %1 | 日期 %2 | 全市场 %3 只 (净流入 %4 / 净流出 %5) | 当前筛选命中 %6 只%7 | 库: fundflow.db")
                 .arg(srcTxt)
                 .arg(QString::fromStdString(ffAll_.front().date))
