@@ -592,7 +592,16 @@ void MainWindow::buildUI() {
     scanTable_->horizontalHeader()->setStretchLastSection(true);
     scanTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     scanTable_->setAlternatingRowColors(true);
+    scanTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     scanTable_->verticalHeader()->setVisible(false);
+    // 双击看详情 —— 原先只接了体检表和回测表, 形态筛选表漏了, 点了没反应
+    scanTable_->setToolTip(QStringLiteral("双击某一行查看该股详情"));
+    connect(scanTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (!scanTable_) return;
+        QTableWidgetItem* it = scanTable_->item(row, 0);
+        if (!it || it->text().isEmpty()) return;
+        showStockDetailByCode(it->text().toStdString());
+    });
     // ---- 「四维体检」页: 顶部一行切换两个结果视图(个股体检 / 形态筛选) ----
     //   原"形态筛选"是独立顶层标签, 现并入本页; 顶层标签由 5 个减到 3 个
     {
