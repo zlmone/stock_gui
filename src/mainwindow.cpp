@@ -2116,12 +2116,45 @@ void MainWindow::updateNews() {
     g_newsFailures = 0;
     all = dedupItems(all);
     int added = cacheNews(dbPath.toStdString(), all);
+
+    // 顺手补抓全文(离线阅读用):
+    //   财联社 / 华尔街见闻的接口本身就返回完整正文, 无需抓页面
+    //   (财联社详情页还是 JS 渲染的, 抓了也是空);
+    //   这里只补"接口只给摘要"的新浪财经 / 东方财富, 并对条数、单条超时、
+    //   总耗时都设了闸, 失败静默跳过 —— 保证网络异常时更新也不会长时间卡住。
+    int fetchedText = 0;
+    {
+        const int    kMaxFetch  = 20;      // 每次更新最多补抓 20 条
+        const int    kTimeoutMs = 6000;    // 单条抓取超时
+        const int    kBudgetMs  = 25000;   // 补抓阶段总耗时上限(安全阀)
+        const size_t kEnoughLen = 400;     // 已有正文达到这个长度就认为够全, 不再抓
+        QElapsedTimer budget; budget.start();
+        for (auto& it : all) {
+            if (fetchedText >= kMaxFetch || budget.elapsed() > kBudgetMs) break;
+            if (it.source != "新浪财经" && it.source != "东方财富") continue;
+            if (it.link.empty()) continue;
+            // 库里已有足够长的正文(之前补抓过)就跳过, 避免每次更新重复抓同一条
+            if (loadNewsItem(dbPath.toStdString(), it.link).content.size() >= kEnoughLen) continue;
+            status_->setText(QStringLiteral("补抓全文 %1/%2: %3")
+                .arg(fetchedText + 1).arg(kMaxFetch)
+                .arg(QString::fromStdString(it.title).left(20)));
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);  // 只重绘, 不收输入
+            QString err;
+            QByteArray html = fetchNewsFeed(*newsNM_, QString::fromStdString(it.link), kTimeoutMs, &err);
+            if (html.isEmpty()) continue;
+            QByteArray u8 = convertToUtf8(html);
+            std::string txt = extractArticleText(std::string(u8.constData(), u8.size()));
+            if (txt.size() < kEnoughLen) continue;   // 抽不出有效正文(如需 JS 渲染的页面)
+            if (updateNewsContent(dbPath.toStdString(), it.link, txt) > 0) fetchedText++;
+        }
+    }
+
     loadNewsView(newsFilter_ ? newsFilter_->currentText() : QString());
     int totalNow = newsTable_ ? newsTable_->rowCount() : 0;
     progress_->setVisible(false);
     btnUpdateNews_->setEnabled(true);
-    status_->setText(QStringLiteral("新闻已更新: 新增 %1 条, 缓存共 %2 条")
-        .arg(added).arg(totalNow));
+    status_->setText(QStringLiteral("新闻已更新: 新增 %1 条, 补抓全文 %2 条, 缓存共 %3 条")
+        .arg(added).arg(fetchedText).arg(totalNow));
 }
 
 void MainWindow::loadNewsView(const QString& category) {
