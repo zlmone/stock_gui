@@ -66,6 +66,8 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QKeySequence>
 #include <QToolButton>
 #include <QDialogButtonBox>
+#include <QStackedWidget>
+#include <QButtonGroup>
 
 // 带数值的表格项: 点表头排序时按数值比较(而非字符串), 如 "+20.3%" vs "-2.4%"
 class NumericItem : public QTableWidgetItem {
@@ -316,16 +318,24 @@ void MainWindow::buildUI() {
         connect(aSector, &QAction::triggered, this, &MainWindow::showSectorStats);
 
         auto* mView = menuBar()->addMenu(QStringLiteral("视图(&V)"));
-        // 与右侧实际标签页一一对应(4 个: 四维体检/策略/形态筛选/新闻资讯)
-        const QString tabNames[4] = { QStringLiteral("四维体检"), QStringLiteral("策略"),
-                                      QStringLiteral("形态筛选"), QStringLiteral("新闻资讯") };
-        for (int i = 0; i < 4; ++i) {
+        // 与右侧实际标签页一一对应(3 个: 四维体检 / 策略 / 新闻资讯)
+        const QString tabNames[3] = { QStringLiteral("四维体检"), QStringLiteral("策略"),
+                                      QStringLiteral("新闻资讯") };
+        for (int i = 0; i < 3; ++i) {
             auto* a = mView->addAction(tabNames[i]);
             a->setShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(i + 1)));
             connect(a, &QAction::triggered, this, [this, i]() {
                 if (rightTabs_ && i < rightTabs_->count()) rightTabs_->setCurrentIndex(i);
             });
         }
+        mView->addSeparator();
+        auto* aScanView = mView->addAction(QStringLiteral("形态筛选视图"));
+        aScanView->setShortcut(QKeySequence(QStringLiteral("Ctrl+4")));
+        connect(aScanView, &QAction::triggered, this, [this]() {
+            if (resultStack_) resultStack_->setCurrentIndex(1);
+            if (btnViewScan_) btnViewScan_->setChecked(true);
+            if (rightTabs_) rightTabs_->setCurrentIndex(0);
+        });
 
         auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
         auto* aAbout = mHelp->addAction(QStringLiteral("关于"));
@@ -430,17 +440,7 @@ void MainWindow::buildUI() {
     table_->setAlternatingRowColors(true);
     table_->verticalHeader()->setVisible(false);
     connect(table_, &QTableWidget::cellDoubleClicked, this, &MainWindow::showStockDetail);
-    {
-        // 筛选条件与结果放在同一页(它本来就是筛结果的), 并默认收起以免挤占表格
-        auto* checkPage = new QWidget();
-        auto* cpl = new QVBoxLayout(checkPage);
-        cpl->setContentsMargins(0, 0, 0, 0);
-        if (filterBox_) cpl->addWidget(filterBox_);
-        if (presetBox_) cpl->addWidget(presetBox_);   // 预设策略(一键配置筛选)
-        if (onlyMatch_) cpl->addWidget(onlyMatch_);   // 仅显示满足条件的股票
-        cpl->addWidget(table_, 1);
-        rightTabs_->addTab(checkPage, QStringLiteral("四维体检"));
-    }
+    // (「四维体检」页在 scanTable_ 建好之后再组装: 它要把形态筛选表也纳进来, 见下面)
 
     // 回测结果表
     btTable_ = new QTableWidget();
@@ -527,7 +527,56 @@ void MainWindow::buildUI() {
     scanTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     scanTable_->setAlternatingRowColors(true);
     scanTable_->verticalHeader()->setVisible(false);
-    rightTabs_->addTab(scanTable_, QStringLiteral("形态筛选"));
+    // ---- 「四维体检」页: 顶部一行切换两个结果视图(个股体检 / 形态筛选) ----
+    //   原"形态筛选"是独立顶层标签, 现并入本页; 顶层标签由 5 个减到 3 个
+    {
+        auto* checkPage = new QWidget();
+        auto* cpl = new QVBoxLayout(checkPage);
+        cpl->setContentsMargins(0, 0, 0, 0);
+        cpl->setSpacing(4);
+
+        auto* vrow = new QHBoxLayout();
+        btnViewCheck_ = new QPushButton(QStringLiteral("个股体检"));
+        btnViewScan_  = new QPushButton(QStringLiteral("形态筛选"));
+        btnViewCheck_->setCheckable(true);
+        btnViewScan_->setCheckable(true);
+        btnViewCheck_->setChecked(true);
+        btnViewCheck_->setToolTip(QStringLiteral("股票池的四维体检结果(修复率/回测/均线/PB 等)"));
+        btnViewScan_->setToolTip(QStringLiteral("策略在全市场的形态选股结果(整点扫描; F7)"));
+        auto* vg = new QButtonGroup(checkPage);
+        vg->setExclusive(true);
+        vg->addButton(btnViewCheck_);
+        vg->addButton(btnViewScan_);
+        vrow->addWidget(btnViewCheck_);
+        vrow->addWidget(btnViewScan_);
+        vrow->addStretch();
+        cpl->addLayout(vrow);
+
+        resultStack_ = new QStackedWidget();
+
+        // 视图0: 个股体检 —— 自带筛选控件(两个视图各自带自己的控件, 不互相干扰)
+        auto* p0 = new QWidget();
+        auto* l0 = new QVBoxLayout(p0);
+        l0->setContentsMargins(0, 0, 0, 0);
+        if (filterBox_) l0->addWidget(filterBox_);   // 筛选条件(可折叠)
+        if (presetBox_) l0->addWidget(presetBox_);   // 预设策略(一键配置)
+        if (onlyMatch_) l0->addWidget(onlyMatch_);   // 仅显示满足条件的股票
+        l0->addWidget(table_, 1);
+        resultStack_->addWidget(p0);
+
+        // 视图1: 形态筛选
+        resultStack_->addWidget(scanTable_);
+
+        cpl->addWidget(resultStack_, 1);
+        rightTabs_->insertTab(0, checkPage, QStringLiteral("四维体检"));
+
+        connect(btnViewCheck_, &QPushButton::clicked, this, [this]() {
+            if (resultStack_) resultStack_->setCurrentIndex(0);
+        });
+        connect(btnViewScan_, &QPushButton::clicked, this, [this]() {
+            if (resultStack_) resultStack_->setCurrentIndex(1);
+        });
+    }
     // ---- 新闻资讯 ----
     newsNM_ = new QNetworkAccessManager(this);
     newsTimer_ = new QTimer(this);
@@ -2043,7 +2092,10 @@ void MainWindow::runFormScan() {
     progress_->setVisible(false);
     onStrategyChanged();
     btnRun_->setEnabled(true); btnScan_->setEnabled(true);
-    rightTabs_->setCurrentIndex(2);
+    // 形态筛选已并入「四维体检」页: 切到该页并显示"形态筛选"视图
+    if (resultStack_) resultStack_->setCurrentIndex(1);
+    if (btnViewScan_) btnViewScan_->setChecked(true);
+    if (rightTabs_) rightTabs_->setCurrentIndex(0);
     status_->setText(QStringLiteral("形态筛选[%1]: 命中 %2 / %3 只(跳过停牌%4) | 耗时 %5 秒 | 双击可看备注")
         .arg(QString::fromStdString(sess.strategyName))
         .arg((int)scanHits_.size()).arg(n).arg(skipped).arg(et.elapsed() / 1000.0, 0, 'f', 1));

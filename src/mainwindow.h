@@ -166,6 +166,9 @@ private:
     QNetworkAccessManager* newsNM_ = nullptr;
     class QLabel*       newsStatus_ = nullptr;   // 新闻页自己的状态行(不再覆盖全局状态栏)
     class QSplitter*    splitter_ = nullptr;     // 主分栏(用于记忆左右宽度)
+    class QStackedWidget* resultStack_ = nullptr; // 四维体检页内的两个结果视图(个股体检/形态筛选)
+    class QPushButton*  btnViewCheck_ = nullptr;  // 切到 个股体检
+    class QPushButton*  btnViewScan_ = nullptr;   // 切到 形态筛选
 
     Engine engine_;
     bool engineReady_ = false;
