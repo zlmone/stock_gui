@@ -353,6 +353,18 @@ void MainWindow::buildUI() {
         auto* aUpd = mData->addAction(QStringLiteral("更新数据 (快速, 约15秒)"));
         aUpd->setShortcut(QKeySequence(QStringLiteral("Ctrl+U")));
         connect(aUpd, &QAction::triggered, this, &MainWindow::updateData);
+        auto* aFull = mData->addAction(QStringLiteral("全量重建历史K线 (逐只260根, 约10-20分钟)"));
+        aFull->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+U")));
+        aFull->setToolTip(QStringLiteral("补齐K线深度与中间缺口; 新建的库第一次用它才有 >=60 根历史"));
+        connect(aFull, &QAction::triggered, this, [this]() {
+            if (!engineReady_) { QMessageBox::warning(this, QStringLiteral("错误"), QStringLiteral("数据库未连接")); return; }
+            auto ret = QMessageBox::question(this, QStringLiteral("全量重建历史K线"),
+                QStringLiteral("逐只重新拉取最近 260 根日K, 补齐深度与中间缺口。\n"
+                               "慢速安全模式(每只之间留间隔), 约 10-20 分钟, 期间可继续看界面。\n"
+                               "原数据库不会被破坏: 失败时保持原样。\n\n开始?"),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+            if (ret == QMessageBox::Yes) runFullRebuild();
+        });
         auto* aNews = mData->addAction(QStringLiteral("更新新闻"));
         aNews->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
         connect(aNews, &QAction::triggered, this, &MainWindow::updateNews);
