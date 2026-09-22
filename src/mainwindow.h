@@ -70,6 +70,7 @@ private slots:
     void watchTick();             // 一次实时检测(快): 拉快照 + 用基线指标算评分
     void watchImportFromCodes();  // 用【股票代码】框里的股票
     void watchImportFromTable();  // 用当前【四维体检】结果里的股票
+    void watchImportFromSelection(); // 只用【四维体检】表里选中的行
     void openNewsHtmlLocal(const NewsItem& it); // 把正文渲染成本地 HTML, 用系统浏览器打开(离线可看)
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
                                     int timeoutMs, QString* err);  // 单 feed 同步拉取
@@ -178,6 +179,7 @@ private:
     // 实时盯盘
     QTableWidget*       watchTable_ = nullptr;
     class QComboBox*    watchInterval_ = nullptr;
+    class QComboBox*    watchMode_ = nullptr;      // 评分口径: 0=短线打板/追涨 1=急杀反弹/低吸
     class QPushButton*  btnWatchNow_ = nullptr;
     class QTimer*       watchTimer_ = nullptr;
     class QLabel*       watchStatus_ = nullptr;

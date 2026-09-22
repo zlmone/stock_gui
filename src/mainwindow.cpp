@@ -68,6 +68,7 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QDialogButtonBox>
 #include <QStackedWidget>
 #include <QButtonGroup>
+#include <QItemSelectionModel>
 
 // 带数值的表格项: 点表头排序时按数值比较(而非字符串), 如 "+20.3%" vs "-2.4%"
 class NumericItem : public QTableWidgetItem {
@@ -439,6 +440,8 @@ void MainWindow::buildUI() {
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setAlternatingRowColors(true);
     table_->verticalHeader()->setVisible(false);
+    table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table_->setSelectionMode(QAbstractItemView::ExtendedSelection);   // 供"用选中行"多选
     connect(table_, &QTableWidget::cellDoubleClicked, this, &MainWindow::showStockDetail);
     // (「四维体检」页在 scanTable_ 建好之后再组装: 它要把形态筛选表也纳进来, 见下面)
 
@@ -672,6 +675,14 @@ void MainWindow::buildUI() {
         crow->addWidget(watchInterval_);
         crow->addWidget(new QLabel(QStringLiteral("自动检测一次")));
 
+        crow->addWidget(new QLabel(QStringLiteral("评分口径:")));
+        watchMode_ = new QComboBox();
+        watchMode_->addItem(QStringLiteral("短线打板/追涨"), 0);
+        watchMode_->addItem(QStringLiteral("急杀反弹/低吸"), 1);
+        watchMode_->setToolTip(QStringLiteral("打板: 位置越高、当日越强得分越高; 低吸: 位置越低、修复率越高得分越高"));
+        connect(watchMode_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { watchTick(); });
+        crow->addWidget(watchMode_);
+
         btnWatchNow_ = new QPushButton(QStringLiteral("立即检测"));
         connect(btnWatchNow_, &QPushButton::clicked, this, &MainWindow::watchTick);
         crow->addWidget(btnWatchNow_);
@@ -685,6 +696,11 @@ void MainWindow::buildUI() {
         bImpTable->setToolTip(QStringLiteral("把【四维体检】页表格里的股票加入盯盘"));
         connect(bImpTable, &QPushButton::clicked, this, &MainWindow::watchImportFromTable);
         crow->addWidget(bImpTable);
+
+        auto* bImpSel = new QPushButton(QStringLiteral("用选中行"));
+        bImpSel->setToolTip(QStringLiteral("只把【四维体检】表里当前选中的行加入盯盘(按住 Ctrl/Shift 可多选)"));
+        connect(bImpSel, &QPushButton::clicked, this, &MainWindow::watchImportFromSelection);
+        crow->addWidget(bImpSel);
         crow->addStretch();
         wl->addLayout(crow);
 
@@ -2781,49 +2797,78 @@ void MainWindow::openNewsHtmlLocal(const NewsItem& src) {
 // 买入评分(0-100): 在现有四维指标上叠加实时价, 分数越高越偏向买入。
 // 权重合计 100 —— 趋势 28 / 位置 20 / 行为 20 / 量能 16 / 估值 16,
 // 最后用 Stats::verdict 封顶(下跌趋势、高位不该给高分)。权重可按需调整。
-static int watchScoreOf(const Stats& s, double livePrice) {
+static int watchScoreOf(const Stats& s, double livePrice, double chgPct, int mode) {
     if (livePrice <= 0) livePrice = s.price;
     int sc = 0;
 
-    // --- 趋势 28: 现价站上均线 + 多头排列 ---
-    if (s.ma5  > 0 && livePrice > s.ma5)  sc += 7;
-    if (s.ma10 > 0 && livePrice > s.ma10) sc += 7;
-    if (s.ma20 > 0 && livePrice > s.ma20) sc += 7;
-    if (s.ma20 > 0 && s.ma5 > s.ma10 && s.ma10 > s.ma20) sc += 7;
+    // ---- 趋势(两种口径共用): 现价站上均线 + 多头排列, 满分 28 ----
+    int trend = 0;
+    if (s.ma5  > 0 && livePrice > s.ma5)  trend += 7;
+    if (s.ma10 > 0 && livePrice > s.ma10) trend += 7;
+    if (s.ma20 > 0 && livePrice > s.ma20) trend += 7;
+    if (s.ma20 > 0 && s.ma5 > s.ma10 && s.ma10 > s.ma20) trend += 7;
 
-    // --- 位置 20: 本工具是"急杀反弹"逻辑, 位置越低越有反弹空间 ---
-    if      (s.pos60 <= 25) sc += 20;
-    else if (s.pos60 <= 45) sc += 15;
-    else if (s.pos60 <= 65) sc += 10;
-    else if (s.pos60 <= 85) sc += 5;
+    if (mode == 0) {
+        // ================= 短线打板 / 追涨 =================
+        // 趋势 30 / 位置 20(越高越强) / 强度 20(当日涨幅) / 量能 20 / 动能 10
+        sc += trend * 30 / 28;
 
-    // --- 行为 20: 修复率 + 样本充足度 + 涨停基因 ---
-    if      (s.fixRate >= 60) sc += 12;
-    else if (s.fixRate >= 45) sc += 9;
-    else if (s.fixRate >= 30) sc += 6;
-    else                      sc += 3;
-    if (s.events  >= 5) sc += 3;
-    if (s.ztCount >= 2) sc += 5;
+        if      (s.pos60 >= 85) sc += 20;      // 打板不吃"位置低加分", 反而要接近新高
+        else if (s.pos60 >= 70) sc += 16;
+        else if (s.pos60 >= 55) sc += 12;
+        else if (s.pos60 >= 40) sc += 6;
 
-    // --- 量能 16: 量比 ---
-    if      (s.volRatio >= 1.5) sc += 16;
-    else if (s.volRatio >= 1.2) sc += 12;
-    else if (s.volRatio >= 0.8) sc += 8;
-    else                        sc += 4;
+        if      (chgPct >= 5.0) sc += 20;      // 当日强度
+        else if (chgPct >= 3.0) sc += 16;
+        else if (chgPct >= 1.0) sc += 12;
+        else if (chgPct >= 0.0) sc += 8;
+        else                    sc += 2;
 
-    // --- 估值 16: PB 近 3 年分位(无数据给中性 8 分) ---
-    if      (s.pbPct3y < 0)    sc += 8;
-    else if (s.pbPct3y <= 20)  sc += 16;
-    else if (s.pbPct3y <= 40)  sc += 12;
-    else if (s.pbPct3y <= 60)  sc += 8;
-    else if (s.pbPct3y <= 80)  sc += 4;
+        if      (s.volRatio >= 2.0) sc += 20;  // 量能要放出来
+        else if (s.volRatio >= 1.5) sc += 15;
+        else if (s.volRatio >= 1.0) sc += 10;
+        else                        sc += 4;
+
+        if      (s.emaRedDays >= 3) sc += 10;  // 连续红柱 = 动能延续
+        else if (s.emaRedDays >= 1) sc += 6;
+        else                        sc += 2;
+
+        // 打板不怕高位, 只怕趋势坏; 另外无量追高压一压
+        if (s.verdict.find("下跌趋势") != std::string::npos) { if (sc > 40) sc = 40; }
+        else if (s.volRatio > 0 && s.volRatio < 0.8) { if (sc > 70) sc = 70; }
+    } else {
+        // ================= 急杀反弹 / 低吸(原口径) =================
+        sc += trend;                                   // 趋势 28
+
+        if      (s.pos60 <= 25) sc += 20;              // 位置越低越有反弹空间
+        else if (s.pos60 <= 45) sc += 15;
+        else if (s.pos60 <= 65) sc += 10;
+        else if (s.pos60 <= 85) sc += 5;
+
+        if      (s.fixRate >= 60) sc += 12;            // 行为 20
+        else if (s.fixRate >= 45) sc += 9;
+        else if (s.fixRate >= 30) sc += 6;
+        else                      sc += 3;
+        if (s.events  >= 5) sc += 3;
+        if (s.ztCount >= 2) sc += 5;
+
+        if      (s.volRatio >= 1.5) sc += 16;          // 量能 16
+        else if (s.volRatio >= 1.2) sc += 12;
+        else if (s.volRatio >= 0.8) sc += 8;
+        else                        sc += 4;
+
+        if      (s.pbPct3y < 0)    sc += 8;            // 估值 16
+        else if (s.pbPct3y <= 20)  sc += 16;
+        else if (s.pbPct3y <= 40)  sc += 12;
+        else if (s.pbPct3y <= 60)  sc += 8;
+        else if (s.pbPct3y <= 80)  sc += 4;
+
+        if (s.verdict.find("下跌趋势") != std::string::npos) { if (sc > 45) sc = 45; }
+        else if (s.verdict.find("高位") != std::string::npos) { if (sc > 60) sc = 60; }
+    }
 
     if (sc > 100) sc = 100;
-
-    // --- 用已有状态判定封顶 ---
-    if (s.verdict.find("下跌趋势") != std::string::npos) { if (sc > 45) sc = 45; }
-    else if (s.verdict.find("高位") != std::string::npos) { if (sc > 60) sc = 60; }
-
+    if (sc < 0) sc = 0;
     return sc;
 }
 
@@ -2883,6 +2928,34 @@ void MainWindow::watchImportFromTable() {
     watchRebuild();
 }
 
+// 只导入【四维体检】表里当前选中的行
+void MainWindow::watchImportFromSelection() {
+    if (!table_ || table_->rowCount() == 0) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 【四维体检】结果表还是空的, 先跑一次体检"));
+        return;
+    }
+    const QModelIndexList sel = table_->selectionModel()
+                              ? table_->selectionModel()->selectedRows() : QModelIndexList();
+    if (sel.isEmpty()) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 体检表里没有选中的行(按住 Ctrl/Shift 可多选)"));
+        return;
+    }
+    watchCodes_.clear();
+    for (const QModelIndex& idx : sel) {
+        QTableWidgetItem* it = table_->item(idx.row(), 0);
+        if (!it) continue;
+        QString c = it->text().trimmed();
+        const int dot = c.indexOf('.');
+        if (dot > 0) c = c.left(dot);
+        if (c.size() == 6) watchCodes_.push_back(c);
+    }
+    if (watchCodes_.isEmpty()) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 选中的行里没有可识别的 6 位代码"));
+        return;
+    }
+    watchRebuild();
+}
+
 // 重算基线四维指标(较慢: 每只都要算修复率/回测/筹码, 所以只在导入时做一次)
 void MainWindow::watchRebuild() {
     if (watchCodes_.isEmpty()) { if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 没有股票")); return; }
@@ -2917,6 +2990,7 @@ void MainWindow::watchTick() {
     QStringList codes;
     for (const QString& c : watchCodes_) codes << c;
 
+    const int mode = watchMode_ ? watchMode_->currentData().toInt() : 0;   // 0=短线打板 1=急杀反弹
     QElapsedTimer et; et.start();
     const QVector<Quote> qs = fetchQuotes(codes);
 
@@ -2945,7 +3019,7 @@ void MainWindow::watchTick() {
         r.fixRate  = s.fixRate;
         r.bt       = s.backtest;
         r.chip     = s.chipProfit;
-        r.score    = watchScoreOf(s, live);
+        r.score    = watchScoreOf(s, live, r.chg, mode);
         r.sig      = watchSignalOf(r.score);
         r.qtime    = q.time.isEmpty() ? q.date : q.time;
         rows.push_back(r);
