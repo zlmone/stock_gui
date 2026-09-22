@@ -282,6 +282,7 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     if (splitter_) st.setValue(QStringLiteral("ui/splitter"), splitter_->saveState());
     if (rightTabs_) st.setValue(QStringLiteral("ui/lastTab"), rightTabs_->currentIndex());
     if (codeEdit_) st.setValue(QStringLiteral("ui/codes"), codeEdit_->text());
+    filterCfgSave();          // 筛选条件的勾选与阈值
     QMainWindow::closeEvent(e);
 }
 
@@ -918,6 +919,8 @@ void MainWindow::buildUI() {
     }
 
     setCentralWidget(central);
+    // 恢复上次的筛选条件放最后做: 保证表格/缓存都已建好, 触发刷新也不会碰到空指针
+    filterCfgLoad();
 }
 
 void MainWindow::buildSidePanel(QVBoxLayout* sv) {
@@ -1004,6 +1007,64 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     fZtVal_ = new QSpinBox();
     fZtVal_->setRange(1, 50); fZtVal_->setValue(2);
     grid->addWidget(fZtOn_, r, 0); grid->addWidget(fZtVal_, r, 1); r++;
+
+    // 现价区间 —— 原先筛选条件里只有技术/估值类指标, 没有最直观的"价格"这一项
+    fPriceOn_ = new QCheckBox(QStringLiteral("现价"));
+    fPriceLo_ = new QDoubleSpinBox(); fPriceHi_ = new QDoubleSpinBox();
+    for (QDoubleSpinBox* sp : {fPriceLo_, fPriceHi_}) {
+        sp->setRange(0, 10000); sp->setDecimals(2); sp->setSuffix(QStringLiteral(" 元"));
+        sp->setToolTip(QStringLiteral("按最新收盘价(元)过滤, 例如 5~50 元"));
+    }
+    fPriceLo_->setValue(5); fPriceHi_->setValue(50);
+    grid->addWidget(fPriceOn_, r, 0);
+    {
+        auto* hb = new QHBoxLayout();
+        hb->addWidget(fPriceLo_);
+        hb->addWidget(new QLabel(QStringLiteral("~")));
+        hb->addWidget(fPriceHi_);
+        grid->addLayout(hb, r, 1);
+    }
+    r++;
+
+    fMktcapOn_ = new QCheckBox(QStringLiteral("总市值"));
+    fMktcapLo_ = new QDoubleSpinBox(); fMktcapHi_ = new QDoubleSpinBox();
+    for (QDoubleSpinBox* sp : {fMktcapLo_, fMktcapHi_}) {
+        sp->setRange(0, 100000); sp->setDecimals(0); sp->setSuffix(QStringLiteral(" 亿"));
+        sp->setToolTip(QStringLiteral("按总市值(亿)过滤, 例如 30~500 亿(避开超大盘/微盘); "
+                                      "市值未知的股票不会被这条拦掉"));
+    }
+    fMktcapLo_->setValue(30); fMktcapHi_->setValue(500);
+    grid->addWidget(fMktcapOn_, r, 0);
+    {
+        auto* hb = new QHBoxLayout();
+        hb->addWidget(fMktcapLo_);
+        hb->addWidget(new QLabel(QStringLiteral("~")));
+        hb->addWidget(fMktcapHi_);
+        grid->addLayout(hb, r, 1);
+    }
+    r++;
+
+    fVolRatioOn_ = new QCheckBox(QStringLiteral("量比 ≥"));
+    fVolRatioVal_ = new QDoubleSpinBox();
+    fVolRatioVal_->setRange(0.1, 20); fVolRatioVal_->setDecimals(2); fVolRatioVal_->setSingleStep(0.1);
+    fVolRatioVal_->setValue(1.0);
+    fVolRatioVal_->setToolTip(QStringLiteral("最新日成交量 / 前5日均量; >1 才算放量"));
+    grid->addWidget(fVolRatioOn_, r, 0); grid->addWidget(fVolRatioVal_, r, 1); r++;
+
+    fTurnoverOn_ = new QCheckBox(QStringLiteral("换手率 ≥"));
+    fTurnoverVal_ = new QDoubleSpinBox();
+    fTurnoverVal_->setRange(0, 100); fTurnoverVal_->setDecimals(2); fTurnoverVal_->setSingleStep(0.5);
+    fTurnoverVal_->setValue(3); fTurnoverVal_->setSuffix(QStringLiteral(" %"));
+    fTurnoverVal_->setToolTip(QStringLiteral("最新日换手率; 太低说明没人玩, 太高说明筹码在飞。"
+                                            "换手率来自快照(stocks表), 没跑过【更新数据】的老库里是 0, 会被这条全部拦掉"));
+    grid->addWidget(fTurnoverOn_, r, 0); grid->addWidget(fTurnoverVal_, r, 1); r++;
+
+    fFromHighOn_ = new QCheckBox(QStringLiteral("距60日高点 ≥"));
+    fFromHighVal_ = new QDoubleSpinBox();
+    fFromHighVal_->setRange(-60, 0); fFromHighVal_->setDecimals(1); fFromHighVal_->setSingleStep(0.5);
+    fFromHighVal_->setValue(-10); fFromHighVal_->setSuffix(QStringLiteral(" %"));
+    fFromHighVal_->setToolTip(QStringLiteral("负值: -10 表示「离60日最高价不超过10%」(即贴近新高)"));
+    grid->addWidget(fFromHighOn_, r, 0); grid->addWidget(fFromHighVal_, r, 1); r++;
 
     fPosOn_ = new QCheckBox(QStringLiteral("60日位置"));
     fPosLo_ = new QDoubleSpinBox(); fPosLo_->setRange(0, 100); fPosLo_->setValue(25); fPosLo_->setSuffix(" %");
@@ -1198,10 +1259,12 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
 
     // 筛选条件变化 -> 扫描视图即时刷新 (无需重新扫描)
     for (auto* b : {fFixRateOn_, fSamplesOn_, fBacktestOn_, fWorstOn_, fZtOn_, fPosOn_, fMa20On_, fPbOn_,
-                    fChipProfitOn_, fChipConcOn_, fChipConc90On_})
+                    fChipProfitOn_, fChipConcOn_, fChipConc90On_,
+                    fPriceOn_, fMktcapOn_, fVolRatioOn_, fTurnoverOn_, fFromHighOn_})
         connect(b, &QCheckBox::toggled, this, &MainWindow::onFiltersChanged);
     for (auto* sp : {fFixRateVal_, fBacktestVal_, fWorstVal_, fPosLo_, fPosHi_, fMa20Val_, fPbVal_,
-                     fChipProfitVal_, fChipConcVal_, fChipConc90Val_})
+                     fChipProfitVal_, fChipConcVal_, fChipConc90Val_,
+                     fPriceLo_, fPriceHi_, fMktcapLo_, fMktcapHi_, fVolRatioVal_, fTurnoverVal_, fFromHighVal_})
         connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &MainWindow::onFiltersChanged);
     for (auto* sp : {fSamplesVal_, fZtVal_})
         connect(sp, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onFiltersChanged);
@@ -1226,6 +1289,13 @@ bool MainWindow::matchFilters(const Stats& s) const {
     if (fBacktestOn_->isChecked() && s.backtest < fBacktestVal_->value()) return false;
     if (fWorstOn_->isChecked() && (s.events == 0 || s.worst < fWorstVal_->value())) return false;
     if (fZtOn_->isChecked() && s.ztCount < fZtVal_->value()) return false;
+    if (fPriceOn_->isChecked() && (s.price < fPriceLo_->value() || s.price > fPriceHi_->value())) return false;
+    if (fMktcapOn_->isChecked() && s.mktcap > 0
+        && (s.mktcap < fMktcapLo_->value() || s.mktcap > fMktcapHi_->value())) return false;
+    if (fVolRatioOn_->isChecked() && s.volRatio < fVolRatioVal_->value()) return false;
+    if (fTurnoverOn_->isChecked() && s.turnover < fTurnoverVal_->value()) return false;
+    // 注意: fromHigh60 是负值百分比, 恰好创60日新高时就是 0(合法值), 所以不能把 0 当"无数据"排除
+    if (fFromHighOn_->isChecked() && s.fromHigh60 < fFromHighVal_->value()) return false;
     if (fPosOn_->isChecked() && (s.pos60 < fPosLo_->value() || s.pos60 > fPosHi_->value())) return false;
     if (fMa20On_->isChecked() && s.vsMa20 < fMa20Val_->value()) return false;
     if (fPbOn_->isChecked() && (s.pbPct3y < 0 || s.pbPct3y > fPbVal_->value())) return false;
@@ -1242,6 +1312,10 @@ void MainWindow::applyPreset(int id) {
     fMa20On_->setChecked(false); fPbOn_->setChecked(false);
     fChipProfitOn_->setChecked(false); fChipConcOn_->setChecked(false);
     fChipConc90On_->setChecked(false);
+    // 新增的这几项也要一起复位, 否则套用预设后残留的旧条件会继续默默过滤
+    fPriceOn_->setChecked(false); fMktcapOn_->setChecked(false);
+    fVolRatioOn_->setChecked(false); fTurnoverOn_->setChecked(false);
+    fFromHighOn_->setChecked(false);
 
     switch (id) {
     case 0:  // 急杀反弹型
@@ -1712,6 +1786,86 @@ void MainWindow::refreshFromCache() {
     fillTable(show);
     status_->setText(QStringLiteral("全市场扫描: %1 只 | 命中 %2 只 | 调整筛选条件即时刷新")
         .arg((int)scanCache_.size()).arg((int)show.size()));
+}
+
+// ==================== 筛选条件的记忆 ====================
+// 阈值都是个人口味(价格区间/量比/换手每个人都不一样), 所以连勾选状态一起存 QSettings,
+// 下次打开就是上次那套; 键名在 filters 组下, 与界面控件一一对应。
+namespace {
+double filterSpinVal(QAbstractSpinBox* sb) {
+    if (auto* d = qobject_cast<QDoubleSpinBox*>(sb)) return d->value();
+    if (auto* i = qobject_cast<QSpinBox*>(sb))        return (double)i->value();
+    return 0.0;
+}
+void filterSpinSet(QAbstractSpinBox* sb, double v) {
+    if (auto* d = qobject_cast<QDoubleSpinBox*>(sb))      d->setValue(v);
+    else if (auto* i = qobject_cast<QSpinBox*>(sb))       i->setValue((int)v);
+}
+}  // namespace
+
+void MainWindow::filterCfgSave() {
+    QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+    st.beginGroup(QStringLiteral("filters"));
+    struct D { const char* key; QCheckBox* on; QAbstractSpinBox* v1; QAbstractSpinBox* v2; };
+    const D ds[] = {
+        { "fixrate",     fFixRateOn_,     fFixRateVal_,     nullptr },
+        { "samples",     fSamplesOn_,     fSamplesVal_,     nullptr },
+        { "backtest",    fBacktestOn_,    fBacktestVal_,    nullptr },
+        { "worst",       fWorstOn_,       fWorstVal_,       nullptr },
+        { "zt",          fZtOn_,          fZtVal_,          nullptr },
+        { "price",       fPriceOn_,       fPriceLo_,        fPriceHi_ },
+        { "mktcap",      fMktcapOn_,      fMktcapLo_,       fMktcapHi_ },
+        { "volratio",    fVolRatioOn_,    fVolRatioVal_,    nullptr },
+        { "turnover",    fTurnoverOn_,    fTurnoverVal_,    nullptr },
+        { "fromhigh",    fFromHighOn_,    fFromHighVal_,    nullptr },
+        { "pos60",       fPosOn_,         fPosLo_,          fPosHi_ },
+        { "ma20",        fMa20On_,        fMa20Val_,        nullptr },
+        { "pb",          fPbOn_,          fPbVal_,          nullptr },
+        { "chipprofit",  fChipProfitOn_,  fChipProfitVal_,  nullptr },
+        { "chipconc",    fChipConcOn_,    fChipConcVal_,    nullptr },
+        { "chipconc90",  fChipConc90On_,  fChipConc90Val_,  nullptr },
+    };
+    for (const D& d : ds) {
+        const QString k = QString::fromUtf8(d.key);
+        if (d.on) st.setValue(k + QStringLiteral("_on"), d.on->isChecked());
+        if (d.v1) st.setValue(k + QStringLiteral("_v1"), filterSpinVal(d.v1));
+        if (d.v2) st.setValue(k + QStringLiteral("_v2"), filterSpinVal(d.v2));
+    }
+    st.endGroup();
+}
+
+void MainWindow::filterCfgLoad() {
+    QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+    st.beginGroup(QStringLiteral("filters"));
+    struct D { const char* key; QCheckBox* on; QAbstractSpinBox* v1; QAbstractSpinBox* v2; };
+    const D ds[] = {
+        { "fixrate",     fFixRateOn_,     fFixRateVal_,     nullptr },
+        { "samples",     fSamplesOn_,     fSamplesVal_,     nullptr },
+        { "backtest",    fBacktestOn_,    fBacktestVal_,    nullptr },
+        { "worst",       fWorstOn_,       fWorstVal_,       nullptr },
+        { "zt",          fZtOn_,          fZtVal_,          nullptr },
+        { "price",       fPriceOn_,       fPriceLo_,        fPriceHi_ },
+        { "mktcap",      fMktcapOn_,      fMktcapLo_,       fMktcapHi_ },
+        { "volratio",    fVolRatioOn_,    fVolRatioVal_,    nullptr },
+        { "turnover",    fTurnoverOn_,    fTurnoverVal_,    nullptr },
+        { "fromhigh",    fFromHighOn_,    fFromHighVal_,    nullptr },
+        { "pos60",       fPosOn_,         fPosLo_,          fPosHi_ },
+        { "ma20",        fMa20On_,        fMa20Val_,        nullptr },
+        { "pb",          fPbOn_,          fPbVal_,          nullptr },
+        { "chipprofit",  fChipProfitOn_,  fChipProfitVal_,  nullptr },
+        { "chipconc",    fChipConcOn_,    fChipConcVal_,    nullptr },
+        { "chipconc90",  fChipConc90On_,  fChipConc90Val_,  nullptr },
+    };
+    for (const D& d : ds) {
+        const QString k = QString::fromUtf8(d.key);
+        const QVariant on = st.value(k + QStringLiteral("_on"));
+        if (on.isValid() && d.on) d.on->setChecked(on.toBool());
+        const QVariant v1 = st.value(k + QStringLiteral("_v1"));
+        if (v1.isValid() && d.v1) filterSpinSet(d.v1, v1.toDouble());
+        const QVariant v2 = st.value(k + QStringLiteral("_v2"));
+        if (v2.isValid() && d.v2) filterSpinSet(d.v2, v2.toDouble());
+    }
+    st.endGroup();
 }
 
 void MainWindow::onFiltersChanged() {

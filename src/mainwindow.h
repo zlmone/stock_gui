@@ -113,6 +113,8 @@ private:
     void rebuildParamWidgets();       // 按当前策略重建参数控件
     std::vector<StrategyParam> currentStrategyParams() const;
     void fillScanTable();
+    void filterCfgSave();             // 记住筛选条件的勾选与阈值(下次打开就是上次那套)
+    void filterCfgLoad();
 
     // --- 资金流页 (当日全市场资金流, 东财口径) ---
     void buildFundFlowPage();                 // 组装"资金流"标签页
@@ -158,6 +160,11 @@ private:
     QCheckBox* fChipProfitOn_ = nullptr; QDoubleSpinBox* fChipProfitVal_ = nullptr;  // 筹码获利盘 ≤
     QCheckBox* fChipConcOn_ = nullptr;   QDoubleSpinBox* fChipConcVal_ = nullptr;    // 筹码集中度(70) ≥
     QCheckBox* fChipConc90On_ = nullptr; QDoubleSpinBox* fChipConc90Val_ = nullptr;  // 筹码集中度(90) ≥
+    QCheckBox* fPriceOn_ = nullptr;    QDoubleSpinBox* fPriceLo_ = nullptr;  QDoubleSpinBox* fPriceHi_ = nullptr;   // 现价区间(元)
+    QCheckBox* fMktcapOn_ = nullptr;   QDoubleSpinBox* fMktcapLo_ = nullptr; QDoubleSpinBox* fMktcapHi_ = nullptr;  // 总市值区间(亿)
+    QCheckBox* fVolRatioOn_ = nullptr; QDoubleSpinBox* fVolRatioVal_ = nullptr;   // 量比 ≥
+    QCheckBox* fTurnoverOn_ = nullptr; QDoubleSpinBox* fTurnoverVal_ = nullptr;   // 换手率 ≥ %
+    QCheckBox* fFromHighOn_ = nullptr; QDoubleSpinBox* fFromHighVal_ = nullptr;   // 距60日高点 ≥ % (负值)
 
     QCheckBox* onlyMatch_ = nullptr;
     QCheckBox* fundFlowOn_ = nullptr;   // 详情是否查询主力资金流(联网)
