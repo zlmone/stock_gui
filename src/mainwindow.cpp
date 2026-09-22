@@ -58,6 +58,8 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
+#include <Qsci/qsciscintilla.h>
+#include <Qsci/qscilexerlua.h>
 
 // 带数值的表格项: 点表头排序时按数值比较(而非字符串), 如 "+20.3%" vs "-2.4%"
 class NumericItem : public QTableWidgetItem {
@@ -630,14 +632,32 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     // ---------- 代码工作室 (内联编辑 on_bar/on_scan 源码) ----------
     auto* gbEd = new QGroupBox(QStringLiteral("策略代码工作室\n(改完先点“检查策略语法”, 有语法错误不写盘)"));
     auto* edvl = new QVBoxLayout(gbEd);
-    srcEdit_ = new QTextEdit();
-    srcEdit_->setPlaceholderText(QStringLiteral("切换到策略后自动填入该 .lua 源码; 在此直接编辑, 然后“保存源码到文件”写回"));
-    srcEdit_->setFont(QFont(QStringLiteral("Courier New"), 10));
-    srcEdit_->setLineWrapMode(QTextEdit::NoWrap);
-    srcEdit_->setUndoRedoEnabled(true);
-    srcEdit_->setMinimumHeight(180);
+    // 专用代码编辑器: QScintilla + 官方 Lua 词法器
+    // (行号栏 / 括号匹配 / 自动缩进 / 当前行高亮 / 撤销重做 / 折叠 都由它提供)
+    srcEdit_ = new QsciScintilla();
+    {
+        QFont mono(QStringLiteral("Courier New"), 10);
+        auto* lex = new QsciLexerLua(srcEdit_);   // 父对象=编辑器, 随编辑器析构
+        lex->setDefaultFont(mono);
+        srcEdit_->setLexer(lex);
+
+        srcEdit_->setMarginsFont(mono);
+        srcEdit_->setMarginType(0, QsciScintilla::NumberMargin);
+        srcEdit_->setMarginLineNumbers(0, true);
+        srcEdit_->setMarginWidth(0, QStringLiteral("00000"));
+        srcEdit_->setBraceMatching(QsciScintilla::SloppyBraceMatch);
+        srcEdit_->setAutoIndent(true);
+        srcEdit_->setIndentationsUseTabs(false);
+        srcEdit_->setTabWidth(4);
+        srcEdit_->setTabIndents(true);
+        srcEdit_->setBackspaceUnindents(true);
+        srcEdit_->setCaretLineVisible(true);
+        srcEdit_->setCaretLineBackgroundColor(QColor(0xf2, 0xf7, 0xff));
+        srcEdit_->setWrapMode(QsciScintilla::WrapNone);
+        srcEdit_->setUtf8(true);
+        srcEdit_->setMinimumHeight(180);
+    }
     edvl->addWidget(srcEdit_, 1);
-    luaHL_ = new LuaHighlighter(srcEdit_);
     auto* edRow2 = new QHBoxLayout();
     btnSaveSource_ = new QPushButton(QStringLiteral("保存源码到文件"));
     btnSaveSource_->setToolTip(QStringLiteral("先编译校验; 通过且非空才写盘, 写前自动 .bak 备份"));
@@ -981,14 +1001,17 @@ void MainWindow::checkStrategySyntax() {
 void MainWindow::reloadSourceIntoEditor() {
     if (!srcEdit_ || !stratCombo_ || stratCombo_->count() == 0) return;
     QString f = stratCombo_->currentData().toString();
-    if (f.isEmpty()) { srcEdit_->setPlainText(QStringLiteral("(未选择策略)")); return; }
+    if (f.isEmpty()) { srcEdit_->setText(QStringLiteral("(未选择策略)")); return; }
     std::string path = resolveStrategiesDir() + "/" + f.toStdString();
     std::string content = readStrategyFile(path);
     if (content.empty()) {
-        srcEdit_->setPlainText(QStringLiteral("(无法读取该策略文件, 请先保存其它工作)"));
+        srcEdit_->setText(QStringLiteral("(无法读取该策略文件, 请先保存其它工作)"));
         return;
     }
-    srcEdit_->setPlainText(QString::fromStdString(content));
+    // 依文件实际的换行符设置 EOL, 否则保存时可能被整体改成 CRLF
+    srcEdit_->setEolMode(content.find("\r\n") != std::string::npos
+                         ? QsciScintilla::EolWindows : QsciScintilla::EolUnix);
+    srcEdit_->setText(QString::fromStdString(content));
 }
 
 // ---------- 代码工作室: 把编辑区内容写回 .lua (先编译校验, 写前 .bak) ========
@@ -998,7 +1021,7 @@ void MainWindow::saveStrategySource() {
     QString f = stratCombo_->currentData().toString();
     if (f.isEmpty()) { QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("未选择策略")); return; }
     std::string path = resolveStrategiesDir() + "/" + f.toStdString();
-    std::string content = srcEdit_->toPlainText().toStdString();
+    std::string content = srcEdit_->text().toStdString();
     if (content.empty()) {
         QMessageBox::information(this, QStringLiteral("参数工作室"), QStringLiteral("编辑区为空, 不写入。")); return;
     }
@@ -1022,7 +1045,7 @@ void MainWindow::resetStrategySource() {
     if (f.isEmpty()) return;
     std::string path = resolveStrategiesDir() + "/" + f.toStdString();
     std::string content = readStrategyFile(path);
-    srcEdit_->setPlainText(content.empty()
+    srcEdit_->setText(content.empty()
         ? QStringLiteral("(无法读取该策略文件)")
         : QString::fromStdString(content));
 }

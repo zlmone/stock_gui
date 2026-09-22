@@ -8,6 +8,8 @@
 #include "backtest.h"
 #include "news.h"
 
+class QsciScintilla;   // QScintilla 源码编辑器(仅用指针, 完整头文件在 mainwindow.cpp 中引入)
+
 class QTableWidget;
 class QLineEdit;
 class QLabel;
@@ -143,8 +145,7 @@ private:
     std::vector<std::pair<StrategyParam, class QDoubleSpinBox*>> spWidgets_;
 
     // 代码工作室 (内联编辑 on_bar/on_scan 源码)
-    QTextEdit*         srcEdit_ = nullptr;             // 源码编辑区 (等宽)
-    QSyntaxHighlighter* luaHL_ = nullptr;              // Lua 语法高亮器
+    QsciScintilla*     srcEdit_ = nullptr;             // 源码编辑区 (QScintilla, 带官方 Lua 词法器)
     class QPushButton* btnSaveSource_ = nullptr;       // 保存源码到文件
     class QPushButton* btnReloadSource_ = nullptr;     // 重载参数(重读 params)
     class QPushButton* btnResetSource_ = nullptr;      // 重置源码(还原磁盘原文)

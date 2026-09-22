@@ -79,6 +79,17 @@ if(Qt5_FOUND)
         ${SQLITE_SRC}
     )
     target_include_directories(stock_gui PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)
+
+    # ---- QScintilla: 专用 Lua 代码编辑器 (内部静态构建, 见 scripts/build_qscintilla_static.sh) ----
+    #   提供行号栏 / 括号匹配 / 自动缩进 / 官方 Lua 词法器 / 折叠等, 取代原先的 QTextEdit + 自写高亮.
+    set(QSCINTILLA_PREFIX "/home/srdev/devdisk/qscintilla-install" CACHE PATH "QScintilla 静态安装前缀")
+    if(NOT EXISTS "${QSCINTILLA_PREFIX}/include/Qsci/qsciscintilla.h")
+        message(FATAL_ERROR "未找到 QScintilla: ${QSCINTILLA_PREFIX} (请先运行 scripts/build_qscintilla_static.sh)")
+    endif()
+    message(STATUS "QScintilla: ${QSCINTILLA_PREFIX}")
+    target_include_directories(stock_gui PRIVATE "${QSCINTILLA_PREFIX}/include")
+    target_link_libraries(stock_gui PRIVATE "${QSCINTILLA_PREFIX}/lib/libqscintilla2_qt5.a")
+
     target_link_libraries(stock_gui PRIVATE lua54)
     # Qt 库: 静态时链接 libQt5*.a (USE_STATIC_QT=ON), 动态时链接 Qt5*.dll 导入库
     target_link_libraries(stock_gui PRIVATE Qt5::Widgets Qt5::Network)
