@@ -1095,16 +1095,22 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     fChipProfitVal_->setToolTip(QStringLiteral("获利盘少 = 多数筹码被套(潜在抛压小/底部区)"));
     grid->addWidget(fChipProfitOn_, r, 0); grid->addWidget(fChipProfitVal_, r, 1); r++;
 
-    fChipConcOn_ = new QCheckBox(QStringLiteral("筹码集中70 ≥"));
+    // 注意(2026-09 修正): 集中度这个数 = (高成本端-低成本端)/(两者之和)×100, 本质是"筹码成本带的宽度",
+    //   数值越小 = 带越窄 = 越集中。所以这里必须是 "≤"。原先是 "≥", 等于专门挑出"最散"的票,
+    //   和"筹码吸筹型"预设的意图正好反着来。
+    fChipConcOn_ = new QCheckBox(QStringLiteral("筹码集中70 ≤"));
     fChipConcVal_ = new QDoubleSpinBox();
-    fChipConcVal_->setRange(0, 50); fChipConcVal_->setDecimals(1); fChipConcVal_->setValue(8);
-    fChipConcVal_->setToolTip(QStringLiteral("70%筹码集中度 = 中间70%筹码的成本区间宽度, 越小越集中"));
+    fChipConcVal_->setRange(0, 100); fChipConcVal_->setDecimals(1); fChipConcVal_->setValue(8);
+    fChipConcVal_->setToolTip(QStringLiteral("数值 = 中间70%筹码的成本带宽度(%): 越小越集中。\n"
+                                             "例: 平安银行 ≈ 3.8(带很窄, 筹码集中), 高波动票能到 50+。\n"
+                                             "本项含义是「集中度 ≤ 该值」, 8 已经算相当集中。"));
     grid->addWidget(fChipConcOn_, r, 0); grid->addWidget(fChipConcVal_, r, 1); r++;
 
-    fChipConc90On_ = new QCheckBox(QStringLiteral("筹码集中90 ≥"));
+    fChipConc90On_ = new QCheckBox(QStringLiteral("筹码集中90 ≤"));
     fChipConc90Val_ = new QDoubleSpinBox();
-    fChipConc90Val_->setRange(0, 80); fChipConc90Val_->setDecimals(1); fChipConc90Val_->setValue(15);
-    fChipConc90Val_->setToolTip(QStringLiteral("90%筹码集中度 = 全部筹码成本区间宽度, 覆盖更全"));
+    fChipConc90Val_->setRange(0, 100); fChipConc90Val_->setDecimals(1); fChipConc90Val_->setValue(15);
+    fChipConc90Val_->setToolTip(QStringLiteral("数值 = 全部(90%)筹码的成本带宽度(%): 同样越小越集中, 覆盖比70%更全。\n"
+                                               "本项含义是「集中度 ≤ 该值」; 因为区间更宽, 取值一般比70那项大一些。"));
     grid->addWidget(fChipConc90On_, r, 0); grid->addWidget(fChipConc90Val_, r, 1); r++;
 
     // 筛选条件不留在左侧栏, 而是挂到"四维体检"页顶部(与结果放在一起, 见 buildUI)
@@ -1300,8 +1306,9 @@ bool MainWindow::matchFilters(const Stats& s) const {
     if (fMa20On_->isChecked() && s.vsMa20 < fMa20Val_->value()) return false;
     if (fPbOn_->isChecked() && (s.pbPct3y < 0 || s.pbPct3y > fPbVal_->value())) return false;
     if (fChipProfitOn_->isChecked() && (s.chipProfit < 0 || s.chipProfit > fChipProfitVal_->value())) return false;
-    if (fChipConcOn_->isChecked() && (s.chipConc < 0 || s.chipConc < fChipConcVal_->value())) return false;
-    if (fChipConc90On_->isChecked() && (s.chipConc90 < 0 || s.chipConc90 < fChipConc90Val_->value())) return false;
+    // 集中度是"成本带宽度", 越小越集中 -> 超过阈值就是"太散", 剔掉
+    if (fChipConcOn_->isChecked() && (s.chipConc < 0 || s.chipConc > fChipConcVal_->value())) return false;
+    if (fChipConc90On_->isChecked() && (s.chipConc90 < 0 || s.chipConc90 > fChipConc90Val_->value())) return false;
     return true;
 }
 
@@ -1335,7 +1342,7 @@ void MainWindow::applyPreset(int id) {
         fMa20On_->setChecked(true);     fMa20Val_->setValue(-3);
         fPbOn_->setChecked(true);       fPbVal_->setValue(60);
         break;
-    case 3:  // 筹码吸筹型
+    case 3:  // 筹码吸筹型: 多数筹码被套(获利盘少) + 成本带窄(集中度≤8) + 位置不高
         fChipProfitOn_->setChecked(true); fChipProfitVal_->setValue(50);
         fChipConcOn_->setChecked(true);   fChipConcVal_->setValue(8);
         fPosOn_->setChecked(true); fPosLo_->setValue(0); fPosHi_->setValue(60);
@@ -2143,6 +2150,8 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
             .arg(chips.cost15, 0, 'f', 2).arg(chips.cost85, 0, 'f', 2).arg(chips.conc90, 0, 'f', 1);
         html += QString("<tr><td>90%%成本区间</td><td>%1 ~ %2</td><td colspan='6'></td></tr>")
             .arg(chips.cost5, 0, 'f', 2).arg(chips.cost95, 0, 'f', 2);
+        html += "<p style='margin:4px;color:#777'>集中度 = 筹码成本带宽度(%), <b>越小越集中</b>; "
+                "70% 看中间绝大多数筹码, 90% 覆盖更全。本地库样本里大致 2~55, 中位数约 16。</p>";
         html += "</table>";
     }
 

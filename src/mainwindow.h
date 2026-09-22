@@ -158,8 +158,8 @@ private:
     QCheckBox* fMa20On_ = nullptr;     QDoubleSpinBox* fMa20Val_ = nullptr;
     QCheckBox* fPbOn_ = nullptr;       QDoubleSpinBox* fPbVal_ = nullptr;
     QCheckBox* fChipProfitOn_ = nullptr; QDoubleSpinBox* fChipProfitVal_ = nullptr;  // 筹码获利盘 ≤
-    QCheckBox* fChipConcOn_ = nullptr;   QDoubleSpinBox* fChipConcVal_ = nullptr;    // 筹码集中度(70) ≥
-    QCheckBox* fChipConc90On_ = nullptr; QDoubleSpinBox* fChipConc90Val_ = nullptr;  // 筹码集中度(90) ≥
+    QCheckBox* fChipConcOn_ = nullptr;   QDoubleSpinBox* fChipConcVal_ = nullptr;    // 筹码集中度(70) ≤ (越小越集中)
+    QCheckBox* fChipConc90On_ = nullptr; QDoubleSpinBox* fChipConc90Val_ = nullptr;  // 筹码集中度(90) ≤ (越小越集中)
     QCheckBox* fPriceOn_ = nullptr;    QDoubleSpinBox* fPriceLo_ = nullptr;  QDoubleSpinBox* fPriceHi_ = nullptr;   // 现价区间(元)
     QCheckBox* fMktcapOn_ = nullptr;   QDoubleSpinBox* fMktcapLo_ = nullptr; QDoubleSpinBox* fMktcapHi_ = nullptr;  // 总市值区间(亿)
     QCheckBox* fVolRatioOn_ = nullptr; QDoubleSpinBox* fVolRatioVal_ = nullptr;   // 量比 ≥

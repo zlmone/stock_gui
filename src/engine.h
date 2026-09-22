@@ -53,8 +53,10 @@ struct ChipDist {
     bool ok = false;
     double profitRatio = 0;    // 获利盘 %
     double cost5 = 0, cost15 = 0, cost50 = 0, cost85 = 0, cost95 = 0;
-    double conc70 = 0;         // 70%筹码集中度 %
-    double conc90 = 0;         // 90%筹码集中度 %
+    // 集中度 = (高成本端 - 低成本端) / (两者之和) × 100, 本质是"筹码成本带的宽度"百分比:
+    //   数值小 = 带窄 = 筹码集中; 数值大 = 带很宽 = 筹码分散(高位套牢+低位获利混在一起)
+    double conc70 = 0;         // 70%筹码集中度 % (cost85 vs cost15) —— 越小越集中
+    double conc90 = 0;         // 90%筹码集中度 % (cost95 vs cost5)  —— 越小越集中
 };
 
 struct Stats {
@@ -87,8 +89,8 @@ struct Stats {
     double mktcap = 0;         // 总市值(亿, 来自快照)
     int    emaRedDays = 0;     // 动能: 连续红柱天数(0=当前黄)
     double chipProfit = -1;    // 筹码获利盘 % (-1=未计算)
-    double chipConc = -1;      // 70%筹码集中度 % (越高越集中)
-    double chipConc90 = -1;    // 90%筹码集中度 %
+    double chipConc = -1;      // 70%筹码集中度 % = 中间70%筹码的成本带宽度, 越小越集中
+    double chipConc90 = -1;    // 90%筹码集中度 % = 成本带宽度, 越小越集中(覆盖比70%更全)
     double chipCost50 = 0;     // 筹码平均成本
 
     // --- 状态判定 ---

@@ -461,7 +461,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
                    QString("筹码峰 获利%1%  红获 蓝套").arg(chipProfit_, 0, 'f', 0));
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
         p.drawText(QRect(chipR.left(), mainR.bottom() + 2, chipW + 60, 14), Qt::AlignLeft,
-                   QString("集中70 %1%  90 %2%").arg(chipConc70_, 0, 'f', 1).arg(chipConc90_, 0, 'f', 1));
+                   QString("集中70 %1%  90 %2%  越小越集中").arg(chipConc70_, 0, 'f', 1).arg(chipConc90_, 0, 'f', 1));
     }
 
     // ---------- 副图 ----------
