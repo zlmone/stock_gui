@@ -393,7 +393,40 @@ struct JsonParser {
                     case 'n': s+='\n'; break;
                     case 'r': s+='\r'; break;
                     case 't': s+='\t'; break;
-                    case 'u': if(p+4<=end) p+=4; break;   // 非 ASCII 占位, 新闻标题罕见
+                    case 'u': {
+                        // 正确的 \uXXXX 解码(含 UTF-16 代理对), 按 UTF-8 写入.
+                        // 原实现只跳过 4 个十六进制位而不还原字符, 导致新浪等
+                        // "整串 \uXXXX 转义"的 JSON 标题被解析成空串 —— 这正是大量
+                        // 新闻条目无标题的根因(纯中文标题全空, 含 ASCII 的则中文被吃掉).
+                        unsigned cp = 0; bool bad = false;
+                        if(p+4 > end) bad = true;
+                        else for(int k=0;k<4;k++){
+                            char h=p[k]; cp<<=4;
+                            if(h>='0'&&h<='9') cp|=(unsigned)(h-'0');
+                            else if(h>='a'&&h<='f') cp|=(unsigned)(h-'a'+10);
+                            else if(h>='A'&&h<='F') cp|=(unsigned)(h-'A'+10);
+                            else { bad=true; break; }
+                        }
+                        if(!bad){
+                            p+=4;
+                            if(cp>=0xD800 && cp<=0xDBFF && p+6<=end && p[0]=='\\' && p[1]=='u'){
+                                unsigned lo=0; bool ok=true;
+                                for(int k=0;k<4;k++){
+                                    char h=p[2+k]; lo<<=4;
+                                    if(h>='0'&&h<='9') lo|=(unsigned)(h-'0');
+                                    else if(h>='a'&&h<='f') lo|=(unsigned)(h-'a'+10);
+                                    else if(h>='A'&&h<='F') lo|=(unsigned)(h-'A'+10);
+                                    else { ok=false; break; }
+                                }
+                                if(ok && lo>=0xDC00 && lo<=0xDFFF){ cp=0x10000+((cp-0xD800)<<10)+(lo-0xDC00); p+=6; }
+                            }
+                            if(cp<0x80) s+=(char)cp;
+                            else if(cp<0x800){ s+=(char)(0xC0|(cp>>6)); s+=(char)(0x80|(cp&0x3F)); }
+                            else if(cp<0x10000){ s+=(char)(0xE0|(cp>>12)); s+=(char)(0x80|((cp>>6)&0x3F)); s+=(char)(0x80|(cp&0x3F)); }
+                            else { s+=(char)(0xF0|(cp>>18)); s+=(char)(0x80|((cp>>12)&0x3F)); s+=(char)(0x80|((cp>>6)&0x3F)); s+=(char)(0x80|(cp&0x3F)); }
+                        }
+                        break;
+                    }
                     default: s+=e; break;
                 }
             } else s+=c;
