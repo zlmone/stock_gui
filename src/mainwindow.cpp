@@ -3681,12 +3681,18 @@ void MainWindow::fillFundFlowTable() {
         if (ffAll_.empty()) {
             ffInfo_->setText(QStringLiteral("资金流库为空 —— 点【⟳ 更新当日资金流】抓一次(约 1 分钟)"));
         } else {
-            int inflow = 0;
-            for (const FundFlowDay& f : ffAll_) if (f.mainNet > 0) inflow++;
-            ffInfo_->setText(QStringLiteral("日期 %1 | 全市场 %2 只 (净流入 %3 / 净流出 %4) | 当前筛选命中 %5 只 | 库: fundflow.db")
+            int inflow = 0, bj = 0;
+            for (const FundFlowDay& f : ffAll_) {
+                if (f.mainNet > 0) inflow++;
+                if (f.code.size() > 3 && f.code.compare(f.code.size() - 3, 3, ".BJ") == 0) bj++;
+            }
+            QString note = bj > 0
+                ? QStringLiteral(" | 含北交所 %1 只(本地K线库不含北交所, 双击看不了详情)").arg(bj)
+                : QString();
+            ffInfo_->setText(QStringLiteral("日期 %1 | 全市场 %2 只 (净流入 %3 / 净流出 %4) | 当前筛选命中 %5 只%6 | 库: fundflow.db")
                 .arg(QString::fromStdString(ffAll_.front().date))
                 .arg((int)ffAll_.size()).arg(inflow).arg((int)ffAll_.size() - inflow)
-                .arg((int)rows.size()));
+                .arg((int)rows.size()).arg(note));
         }
     }
 }
