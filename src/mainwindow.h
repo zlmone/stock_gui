@@ -252,6 +252,12 @@ private:
     class QDoubleSpinBox* ffMinNet_ = nullptr;      // 主力净流入 >= (亿)
     class QDoubleSpinBox* ffMinPct_ = nullptr;      // 主力净占比 >= (%)
     class QDoubleSpinBox* ffMaxChg_ = nullptr;      // 涨幅 <= (%)
+    class QCheckBox*      ffPriceOn_ = nullptr;     // 资金流页: 按现价区间过滤(勾选才生效)
+    class QDoubleSpinBox* ffPriceLo_ = nullptr;
+    class QDoubleSpinBox* ffPriceHi_ = nullptr;
+    class QCheckBox*      ffMktcapOn_ = nullptr;    // 资金流页: 按总市值区间过滤(勾选才生效)
+    class QDoubleSpinBox* ffMktcapLo_ = nullptr;
+    class QDoubleSpinBox* ffMktcapHi_ = nullptr;
     std::vector<FundFlowDay> ffAll_;                // 库中该日全部资金流(降序)
 
     // 默认池 (pool.db)

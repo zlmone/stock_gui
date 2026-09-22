@@ -426,6 +426,15 @@ double Engine::latestPb(const std::string& code) {
     return v;
 }
 
+// ---------- 快照附加信息(内存查表) ----------
+SnapInfo Engine::snapInfoOf(const std::string& code) const {
+    SnapInfo si;
+    if (!dbLatest_) return si;
+    auto it = snapInfo_.find(code);
+    if (it != snapInfo_.end()) si = it->second;
+    return si;
+}
+
 // ---------- 名称 ----------
 std::string Engine::stockName(const std::string& code) {
     if (!dbLatest_) return "";

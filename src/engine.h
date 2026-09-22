@@ -175,6 +175,10 @@ public:
     // 快照附加信息(市值/换手) 缓存: 打开主库后自动加载
     void loadSnapInfo();
 
+    // 查某只票的市值/换手(打开主库时已整表缓存, 这里只查内存, 不碰数据库 —— 全市场逐只调用也不慢)
+    //   mktcap 单位"亿"; 无数据(旧库无该列/代码对不上)时各字段为 0
+    SnapInfo snapInfoOf(const std::string& code) const;
+
 private:
     sqlite3* dbLatest_ = nullptr;
     sqlite3* dbHist_ = nullptr;

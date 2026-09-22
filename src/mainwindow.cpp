@@ -1824,6 +1824,13 @@ void MainWindow::filterCfgSave() {
         { "chipprofit",  fChipProfitOn_,  fChipProfitVal_,  nullptr },
         { "chipconc",    fChipConcOn_,    fChipConcVal_,    nullptr },
         { "chipconc90",  fChipConc90On_,  fChipConc90Val_,  nullptr },
+        // 资金流页的筛选(净流入/净占比/涨幅/现价/市值)一并记住, 键名前缀 ff_
+        { "ff_onlyinflow", ffOnlyInflow_,   nullptr,          nullptr },
+        { "ff_minnet",     nullptr,         ffMinNet_,        nullptr },
+        { "ff_minpct",     nullptr,         ffMinPct_,        nullptr },
+        { "ff_maxchg",     nullptr,         ffMaxChg_,        nullptr },
+        { "ff_price",      ffPriceOn_,      ffPriceLo_,       ffPriceHi_ },
+        { "ff_mktcap",     ffMktcapOn_,     ffMktcapLo_,      ffMktcapHi_ },
     };
     for (const D& d : ds) {
         const QString k = QString::fromUtf8(d.key);
@@ -1855,6 +1862,13 @@ void MainWindow::filterCfgLoad() {
         { "chipprofit",  fChipProfitOn_,  fChipProfitVal_,  nullptr },
         { "chipconc",    fChipConcOn_,    fChipConcVal_,    nullptr },
         { "chipconc90",  fChipConc90On_,  fChipConc90Val_,  nullptr },
+        // 资金流页的筛选(净流入/净占比/涨幅/现价/市值)一并恢复, 键名前缀 ff_
+        { "ff_onlyinflow", ffOnlyInflow_,   nullptr,          nullptr },
+        { "ff_minnet",     nullptr,         ffMinNet_,        nullptr },
+        { "ff_minpct",     nullptr,         ffMinPct_,        nullptr },
+        { "ff_maxchg",     nullptr,         ffMaxChg_,        nullptr },
+        { "ff_price",      ffPriceOn_,      ffPriceLo_,       ffPriceHi_ },
+        { "ff_mktcap",     ffMktcapOn_,     ffMktcapLo_,      ffMktcapHi_ },
     };
     for (const D& d : ds) {
         const QString k = QString::fromUtf8(d.key);
@@ -4091,6 +4105,40 @@ void MainWindow::buildFundFlowPage() {
     row->addStretch();
     v->addLayout(row);
 
+    // 第二行: 价格 / 市值 —— 按净额排序时冒出来的多是大市值高价股, 这两条最实用。
+    //   做成"勾选才生效"(默认不勾), 免得悄悄把结果滤没了还不知道为什么。
+    auto* row2 = new QHBoxLayout();
+    ffPriceOn_ = new QCheckBox(QStringLiteral("现价"));
+    ffPriceOn_->setToolTip(QStringLiteral("按现价(元)过滤, 例如 5~30 元"));
+    connect(ffPriceOn_, &QCheckBox::toggled, this, &MainWindow::fillFundFlowTable);
+    row2->addWidget(ffPriceOn_);
+    ffPriceLo_ = new QDoubleSpinBox(); ffPriceHi_ = new QDoubleSpinBox();
+    for (QDoubleSpinBox* sp : {ffPriceLo_, ffPriceHi_}) {
+        sp->setRange(0, 10000); sp->setDecimals(2); sp->setSuffix(QStringLiteral(" 元"));
+        connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &MainWindow::fillFundFlowTable);
+    }
+    ffPriceLo_->setValue(5); ffPriceHi_->setValue(30);
+    row2->addWidget(ffPriceLo_);
+    row2->addWidget(new QLabel(QStringLiteral("~")));
+    row2->addWidget(ffPriceHi_);
+
+    ffMktcapOn_ = new QCheckBox(QStringLiteral("总市值"));
+    ffMktcapOn_->setToolTip(QStringLiteral("按总市值(亿)过滤, 例如 30~500 亿。市值来自快照(stocks表): "
+                                          "没跑过【更新数据】的库查不到市值, 那类股票不会被这条拦掉"));
+    connect(ffMktcapOn_, &QCheckBox::toggled, this, &MainWindow::fillFundFlowTable);
+    row2->addWidget(ffMktcapOn_);
+    ffMktcapLo_ = new QDoubleSpinBox(); ffMktcapHi_ = new QDoubleSpinBox();
+    for (QDoubleSpinBox* sp : {ffMktcapLo_, ffMktcapHi_}) {
+        sp->setRange(0, 100000); sp->setDecimals(0); sp->setSuffix(QStringLiteral(" 亿"));
+        connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &MainWindow::fillFundFlowTable);
+    }
+    ffMktcapLo_->setValue(30); ffMktcapHi_->setValue(500);
+    row2->addWidget(ffMktcapLo_);
+    row2->addWidget(new QLabel(QStringLiteral("~")));
+    row2->addWidget(ffMktcapHi_);
+    row2->addStretch();
+    v->addLayout(row2);
+
     ffInfo_ = new QLabel(QStringLiteral("尚未加载资金流数据"));
     ffInfo_->setWordWrap(true);
     ffInfo_->setStyleSheet(QStringLiteral("color:#666;"));
@@ -4129,11 +4177,23 @@ std::vector<FundFlowDay> MainWindow::fundFlowFiltered() const {
     const double minNet = (ffMinNet_ ? ffMinNet_->value() : 0.0) * 1e8;   // 亿 -> 元
     const double minPct = ffMinPct_ ? ffMinPct_->value() : -999.0;
     const double maxChg = ffMaxChg_ ? ffMaxChg_->value() : 999.0;
+    // 现价/市值是"勾选才生效"的可选条件(市值查引擎缓存, 全市场逐只查也只是内存查表)
+    const bool byPrice = ffPriceOn_ && ffPriceOn_->isChecked();
+    const double pLo = ffPriceLo_ ? ffPriceLo_->value() : 0.0;
+    const double pHi = ffPriceHi_ ? ffPriceHi_->value() : 0.0;
+    const bool byCap = ffMktcapOn_ && ffMktcapOn_->isChecked();
+    const double cLo = ffMktcapLo_ ? ffMktcapLo_->value() : 0.0;
+    const double cHi = ffMktcapHi_ ? ffMktcapHi_->value() : 0.0;
     for (const FundFlowDay& f : ffAll_) {
         if (onlyIn && f.mainNet <= 0) continue;
         if (f.mainNet < minNet) continue;
         if (f.mainPct < minPct) continue;
         if (f.changePct > maxChg) continue;
+        if (byPrice && (f.close < pLo || f.close > pHi)) continue;
+        if (byCap) {
+            const double cap = engine_.snapInfoOf(f.code).mktcap;
+            if (cap > 0 && (cap < cLo || cap > cHi)) continue;   // 市值未知的不拦
+        }
         out.push_back(f);
     }
     return out;
