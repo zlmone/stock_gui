@@ -91,6 +91,9 @@ private slots:
     void watchImportFromTable();  // 用当前【四维体检】结果里的股票
     void watchImportFromSelection(); // 只用【四维体检】表里选中的行
     void watchShowDetail();       // 打开盯盘表里选中那行的个股详情
+    void watchImportFromScan();     // 用【形态筛选】结果(F7 扫出来的)
+    void watchImportFromBacktest(); // 用【策略】页回测结果
+    bool watchImportFromResultTable(QTableWidget* t, const QString& what);  // 共用助手
     void watchEditCfg();          // 打开"评分参数"对话框
     void openNewsHtmlLocal(const NewsItem& it); // 把正文渲染成本地 HTML, 用系统浏览器打开(离线可看)
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,

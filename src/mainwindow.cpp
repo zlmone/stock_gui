@@ -749,20 +749,38 @@ void MainWindow::buildUI() {
         connect(btnWatchNow_, &QPushButton::clicked, this, &MainWindow::watchTick);
         crow->addWidget(btnWatchNow_);
 
-        auto* bImpCodes = new QPushButton(QStringLiteral("用【股票代码】框"));
-        bImpCodes->setToolTip(QStringLiteral("把左侧股票代码框里的股票加入盯盘, 并重算一次基线指标"));
-        connect(bImpCodes, &QPushButton::clicked, this, &MainWindow::watchImportFromCodes);
-        crow->addWidget(bImpCodes);
+        // 导入来源统一收进一个下拉(否则这里会排成一长排按钮)
+        auto* bImport = new QToolButton();
+        bImport->setText(QStringLiteral("导入股票"));
+        bImport->setPopupMode(QToolButton::InstantPopup);
+        bImport->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        bImport->setToolTip(QStringLiteral("选择把哪一批股票加入盯盘; 导入后会重算一次基线指标"));
+        {
+            auto* m = new QMenu(bImport);
+            auto* a1 = m->addAction(QStringLiteral("用【股票代码】框"));
+            a1->setToolTip(QStringLiteral("左侧股票代码框里的股票"));
+            connect(a1, &QAction::triggered, this, &MainWindow::watchImportFromCodes);
 
-        auto* bImpTable = new QPushButton(QStringLiteral("用当前体检结果"));
-        bImpTable->setToolTip(QStringLiteral("把【四维体检】页表格里的股票加入盯盘"));
-        connect(bImpTable, &QPushButton::clicked, this, &MainWindow::watchImportFromTable);
-        crow->addWidget(bImpTable);
+            auto* a2 = m->addAction(QStringLiteral("用体检结果 (全部)"));
+            connect(a2, &QAction::triggered, this, &MainWindow::watchImportFromTable);
 
-        auto* bImpSel = new QPushButton(QStringLiteral("用选中行"));
-        bImpSel->setToolTip(QStringLiteral("只把【四维体检】表里当前选中的行加入盯盘(按住 Ctrl/Shift 可多选)"));
-        connect(bImpSel, &QPushButton::clicked, this, &MainWindow::watchImportFromSelection);
-        crow->addWidget(bImpSel);
+            auto* a3 = m->addAction(QStringLiteral("用体检结果 (选中行)"));
+            a3->setToolTip(QStringLiteral("只导入【四维体检】表里选中的行(可 Ctrl/Shift 多选)"));
+            connect(a3, &QAction::triggered, this, &MainWindow::watchImportFromSelection);
+
+            m->addSeparator();
+
+            auto* a4 = m->addAction(QStringLiteral("用形态筛选结果"));
+            a4->setToolTip(QStringLiteral("F7 形态筛选扫出来的股票(含策略 on_scan 命中)"));
+            connect(a4, &QAction::triggered, this, &MainWindow::watchImportFromScan);
+
+            auto* a5 = m->addAction(QStringLiteral("用回测结果"));
+            a5->setToolTip(QStringLiteral("【策略】页回测排名表里的股票"));
+            connect(a5, &QAction::triggered, this, &MainWindow::watchImportFromBacktest);
+
+            bImport->setMenu(m);
+        }
+        crow->addWidget(bImport);
 
         auto* bCfg = new QPushButton(QStringLiteral("评分参数…"));
         bCfg->setToolTip(QStringLiteral("调整评分阈值与封顶(涨停处理/分档/信号档位), 改完立即生效并记住"));
@@ -3327,4 +3345,35 @@ void MainWindow::watchShowDetail() {
     QTableWidgetItem* it = watchTable_->item(row, 0);
     if (!it || it->text().isEmpty()) return;
     showStockDetailByCode(it->text().toStdString());
+}
+
+// 从一个"第0列是代码"的结果表导入盯盘(形态筛选 / 回测结果共用)
+bool MainWindow::watchImportFromResultTable(QTableWidget* t, const QString& what) {
+    if (!t || t->rowCount() == 0) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: %1还是空的, 先跑一次再导入").arg(what));
+        return false;
+    }
+    watchCodes_.clear();
+    for (int r = 0; r < t->rowCount(); ++r) {
+        QTableWidgetItem* it = t->item(r, 0);
+        if (!it) continue;
+        const QString c = watchNormCode(it->text());
+        if (!c.isEmpty()) watchCodes_.push_back(c);
+    }
+    if (watchCodes_.isEmpty()) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: %1里没有可识别的代码").arg(what));
+        return false;
+    }
+    watchRebuild();
+    return true;
+}
+
+// 用【形态筛选】结果(F7 / 策略 on_scan 命中)
+void MainWindow::watchImportFromScan() {
+    watchImportFromResultTable(scanTable_, QStringLiteral("【形态筛选】结果表"));
+}
+
+// 用【策略】页的回测排名结果
+void MainWindow::watchImportFromBacktest() {
+    watchImportFromResultTable(btTable_, QStringLiteral("【策略】页回测结果表"));
 }
