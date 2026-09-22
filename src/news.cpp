@@ -698,7 +698,11 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items) {
 std::vector<NewsItem> loadNews(const std::string& dbPath, const std::string& categoryFilter) {
     std::vector<NewsItem> out;
     sqlite3* db = nullptr;
-    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return out;
+    // 用 READWRITE 打开并顺带保证 schema 最新: 老 news.db 没有 content 列,
+    // 只读打开无法补列, 下面带 content 的 SELECT 会直接失败 -> 新闻列表整个变空。
+    // (读路径并不引入新的权限要求: cacheNews 本来就要求可写)
+    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) return out;
+    ensureSchema(db);
     std::string sql;
     sqlite3_stmt* st = nullptr;
     if (categoryFilter.empty()) {
@@ -738,7 +742,8 @@ std::vector<NewsItem> searchNews(const std::string& dbPath, const std::string& k
     for (char c : keyword) { if (c == '%' || c == '_') { like += '\\'; like += c; } else like += c; }
     like += "%";
     sqlite3* db = nullptr;
-    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return out;
+    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) return out;
+    ensureSchema(db);   // 同上: 老库需要先补 content 列, 否则下面的 SELECT 会失败
     const char* sql =
         "SELECT link, title, source, category, description, content, epoch FROM news_items WHERE "
         "title LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\' OR "
@@ -793,7 +798,8 @@ NewsItem loadNewsItem(const std::string& dbPath, const std::string& link) {
     NewsItem it;
     if (link.empty()) return it;
     sqlite3* db = nullptr;
-    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return it;
+    if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) != SQLITE_OK) return it;
+    ensureSchema(db);   // 同上: 老库需要先补 content 列
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(db,
         "SELECT link, title, source, category, description, content, epoch "
