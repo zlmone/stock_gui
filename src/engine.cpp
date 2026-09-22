@@ -206,6 +206,22 @@ static std::vector<Bar> queryBars(sqlite3* db, const std::string& code, int limi
     return out;
 }
 
+// 最近 k 个不同交易日期(降序)
+std::vector<std::string> Engine::recentMarketDates(int k) {
+    std::vector<std::string> out;
+    if (!dbLatest_ || k <= 0) return out;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(dbLatest_, "SELECT DISTINCT date FROM kline_daily ORDER BY date DESC LIMIT ?",
+                           -1, &st, nullptr) != SQLITE_OK) return out;
+    sqlite3_bind_int(st, 1, k);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char* d = sqlite3_column_text(st, 0);
+        if (d) out.push_back((const char*)d);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
 // 全市场相对强度 RPS: 一条 SQL 算出每只"最近 days 个交易日涨幅", 再按排名给百分位。
 // 用窗口函数在库内完成聚合, 避免为了排名把全市场K线都读进内存。
 // RPS=100 最强 / 0 最弱; 例如 RPS>=80 即"跑进全市场前 20%"。

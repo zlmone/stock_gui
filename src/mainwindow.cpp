@@ -1937,19 +1937,26 @@ void MainWindow::updateData() {
     }
 
     // r == 1: 快速更新成功 -> 缺口检查
+    //   快速更新只写"快照当天"这一天。只要库里原来落后 >=1 个交易日, 中间就会留下空洞
+    //   (例: 库停在 09-18, 更新后变成 ... 09-18, 09-22, 少了 09-21)。K线一旦有空洞,
+    //   回测/修复率/均线这些"按相邻交易日计算"的指标都会失真。
+    //   所以这里看"库里最近两个日期"的真实间隔, 而不是更新前后的自然日差。
     QString afterMax = QString::fromStdString(engine_.latestMarketDate());
-    QDate d1 = QDate::fromString(beforeMax, QStringLiteral("yyyy-MM-dd"));
+    QString prevMax;
+    {
+        auto ds = engine_.recentMarketDates(2);
+        if (ds.size() >= 2) prevMax = QString::fromStdString(ds[1]);
+    }
+    QDate d1 = QDate::fromString(prevMax, QStringLiteral("yyyy-MM-dd"));
     QDate d2 = QDate::fromString(afterMax, QStringLiteral("yyyy-MM-dd"));
-    int gapDays = (d1.isValid() && d2.isValid()) ? (int)d1.daysTo(d2) : 0;
+    int spanDays = (d1.isValid() && d2.isValid()) ? (int)d1.daysTo(d2) : 0;
 
-    if (gapDays > 3) {
-        auto ret = QMessageBox::question(this, QStringLiteral("检测到历史缺口"),
-            QStringLiteral("最新数据已补到 %1。\n\n"
-                           "但从 %2 到 %3 之间有约 %4 个自然日的缺口\n"
-                           "(快照只能补最新一天, 中间缺口需要逐只拉取)。\n\n"
-                           "是否全量重建补齐缺口?\n"
-                           "慢速安全模式: 逐只拉取260根历史, 约10-20分钟。")
-                .arg(afterMax, beforeMax, afterMax).arg(gapDays),
+    if (spanDays > 3) {
+        auto ret = QMessageBox::question(this, QStringLiteral("检测到K线缺口"),
+            (QStringLiteral("更新后库里最近两个交易日是 %1 与 %2, 相隔 %3 个自然日 —— 中间缺了交易日(快速更新只能补最新一天)。")
+             + QStringLiteral("缺口会让回测/修复率/均线等按相邻交易日计算的指标失真。")
+             + QStringLiteral("是否全量重建补齐缺口? 慢速安全模式: 逐只拉取260根历史, 约10-20分钟。"))
+                .arg(prevMax, afterMax).arg(spanDays),
             QMessageBox::Yes | QMessageBox::No);
         if (ret == QMessageBox::Yes) {
             progress_->setRange(0, 100); progress_->setValue(0);
