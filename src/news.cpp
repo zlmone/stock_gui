@@ -36,11 +36,11 @@ std::string buildFeedUrl(const NewsQuery& q) {
 
 std::vector<NewsQuery> defaultQueries() {
     std::vector<NewsQuery> q;
-    // ⚠ 关键约束: 本程序链接的静态 Qt 构建不含任何 TLS 后端
-    //   (exe 仅导入 WS2_32, 无 secur32.dll/crypt32.dll, 也无 OpenSSL 符号),
-    //   因此程序内发出的 https:// 请求必然 TLS 握手失败、body 为空。
-    //   这正是"新闻源暂时不可用"(updateNews 里 okCount==0)的根本原因 —— 与网络无关。
-    //   故此处只使用实测可用的 http:// 国内 JSON 快讯源。
+    // 说明: 静态 Qt 现在构建时已启用 Windows Schannel TLS 后端
+    //   (配方见 scripts/build_static_qt_tls.sh), 产物 exe 会导入 Secur32/Crypt32,
+    //   具备完整 https 能力, 因此 https 源同样可用。
+    //   下面同时保留一批实测可用的 http:// 源作冗余: 只要有任一源成功,
+    //   updateNews 的 okCount 就 >0, 不会因单源故障而整体显示"新闻源暂时不可用"。
     { NewsQuery a; a.source = "新浪财经"; a.category = "国内"; a.lang = "zh-CN"; a.region = "CN";
       a.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2510&num=30&page=1"; q.push_back(a); }
     { NewsQuery b; b.source = "新浪财经"; b.category = "国际"; b.lang = "zh-CN"; b.region = "CN";
@@ -51,6 +51,8 @@ std::vector<NewsQuery> defaultQueries() {
       d.url = "http://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=30"; q.push_back(d); }
     { NewsQuery e; e.source = "华尔街见闻"; e.category = "国内"; e.lang = "zh-CN"; e.region = "CN";
       e.url = "http://api-one.wallstcn.com/apiv1/content/lives?channel=a-stock-channel&limit=30"; q.push_back(e); }
+    { NewsQuery f; f.source = "财联社"; f.category = "国内"; f.lang = "zh-CN"; f.region = "CN";
+      f.url = "https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9"; q.push_back(f); }
     return q;
 }
 
@@ -466,6 +468,16 @@ std::vector<NewsItem> parseJsonFeed(const std::string& body, const std::string& 
         it.title = title;
         it.description = desc;
         for(int i=0; lkeys[i]; i++){ const JsonValue* f=item.find(lkeys[i]); if(f && f->type==JsonValue::Str && !f->sval.empty()){ it.link=f->sval; break; } }
+        // 部分快讯源(如财联社)不返回 url 字段, 只给数字 id。
+        // news_items.link 是 UNIQUE NOT NULL, 留空会让同源条目互相冲突而只剩一条,
+        // 故按官方详情页规则补全成稳定唯一的链接。
+        if(it.link.empty() && source == "财联社"){
+            const JsonValue* idv = item.find("id");
+            std::string ids;
+            if(idv && idv->type==JsonValue::Str) ids = idv->sval;
+            else if(idv && idv->type==JsonValue::Num) ids = std::to_string((long long)idv->num);
+            if(!ids.empty()) it.link = "https://www.cls.cn/detail/" + ids;
+        }
         long long ep=0;
         for(int i=0; kkeys[i]; i++){ ep=epochFrom(item.find(kkeys[i])); if(ep>0) break; }
         while(ep>1000000000000LL) ep/=1000;   // 毫秒->秒 (如 wallstcn display_time)
