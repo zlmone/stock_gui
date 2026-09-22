@@ -656,6 +656,11 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     edvl->addWidget(edHint);
     sv->addWidget(gbBt);
 
+    // 把"策略代码工作室"挂进侧栏 —— 此前 gbEd 只被创建和塞了内容,
+    // 却从未 addWidget 到任何父控件, 导致整个编辑器(含源码编辑区与
+    // "保存源码到文件")在界面上根本不存在, Lua 策略没法在程序里打开编辑。
+    sv->addWidget(gbEd);
+
     // 策略切换 -> 重载源码入编辑区 (已在上面 connect, 并在构造末尾初始化一次)
 
     // ---------- 显示选项 + 执行 ----------
