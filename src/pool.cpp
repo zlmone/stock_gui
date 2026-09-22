@@ -7,16 +7,30 @@
 #include <QRegularExpression>
 #include <sqlite3.h>
 
-// 与 netclient::codeWithSuffix 同规则(这里不引入 Qt Network, 所以单写一份)
+// 归一化成引擎认识的 "600000.SH" 形式; 解析不出来(不是代码)返回空串。
+//   接受: 600519 | 600519.SH | sh600519 | SZ002730 | 002730.sz | bj920002
+//   推断规则与 netclient::codeWithSuffix 一致(6/9/5->SH, 4/8/920->BJ, 其余 SZ)
 QString poolNormalize(const QString& raw) {
-    QString p = raw.trimmed();
+    QString p = raw.trimmed().toUpper();
     if (p.isEmpty()) return QString();
+
+    QString suf;
     const int dot = p.indexOf('.');
-    if (dot > 0) {                       // 已带后缀: 只做大小写统一
-        QString body = p.left(dot);
-        QString suf = p.mid(dot + 1).toUpper();
-        return body + "." + suf;
+    if (dot > 0) {                                   // 已带后缀
+        suf = p.mid(dot + 1);
+        p = p.left(dot);
     }
+    if (p.size() > 2 && !p.at(0).isDigit()
+        && (p.startsWith("SH") || p.startsWith("SZ") || p.startsWith("BJ"))) {
+        if (suf.isEmpty()) suf = p.left(2);          // 前缀当后缀用(sh600519 -> 600519.SH)
+        p = p.mid(2);
+    }
+    if (p.isEmpty()) return QString();
+    bool allDigit = true;
+    for (const QChar& ch : p) if (!ch.isDigit()) { allDigit = false; break; }
+    if (!allDigit || p.size() < 5 || p.size() > 6) return QString();   // 明显不是股票代码, 丢掉
+
+    if (!suf.isEmpty()) return p + "." + suf;
     if (p.startsWith("920") || p.startsWith('4') || p.startsWith('8')) return p + ".BJ";
     if (p.startsWith('6') || p.startsWith('9') || p.startsWith('5')) return p + ".SH";
     return p + ".SZ";
