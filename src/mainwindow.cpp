@@ -379,12 +379,12 @@ void MainWindow::buildUI() {
     });
     newsCtl->addWidget(new QLabel(QStringLiteral("双击打开: ")));
     newsOpenMode_ = new QComboBox();
-    newsOpenMode_->addItem(QStringLiteral("程序内阅读"), 0);
-    newsOpenMode_->addItem(QStringLiteral("本地浏览器"), 1);
+    newsOpenMode_->addItem(QStringLiteral("内嵌浏览器"), 0);
+    newsOpenMode_->addItem(QStringLiteral("导出到系统浏览器"), 1);
     newsOpenMode_->addItem(QStringLiteral("网上浏览"), 2);
     newsOpenMode_->setToolTip(QStringLiteral(
-        "程序内阅读: 弹窗看本地缓存的正文(离线可读)\n"
-        "本地浏览器: 把正文写成本地 HTML, 用系统浏览器打开(离线可读)\n"
+        "内嵌浏览器: 在程序窗口内用内嵌浏览器视图读本地缓存的正文(离线可读, Ctrl+滚轮缩放)\n"
+        "导出到系统浏览器: 把正文导出成本地 HTML 文件, 再用系统浏览器打开(离线可读)\n"
         "网上浏览: 打开新闻原网页(需要联网)"));
     {
         QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
@@ -2226,6 +2226,65 @@ void MainWindow::loadNewsView(const QString& category) {
         .arg(rows.size()).arg(category.isEmpty() ? QStringLiteral("全部") : category));
 }
 
+namespace {
+
+QString newsHtmlEscape(const QString& s) {
+    QString o = s;
+    o.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
+    o.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
+    o.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
+    return o;
+}
+
+// 把一条新闻渲染成自包含 HTML —— 内嵌浏览器视图与"导出本地 HTML 文件"共用同一份。
+// 说明: 本程序链接的静态 Qt 只含 qtbase, 不含 QtWebEngine(WebEngine 在 Windows 上
+// 需要 MSVC 且无法静态链接), 所以"内嵌浏览器"用的是 Qt 自带的 HTML 渲染引擎
+// QTextBrowser: 支持 HTML/CSS 子集、可点击链接、Ctrl+滚轮缩放、查找, 且完全离线。
+QString newsItemHtml(const NewsItem& it) {
+    QString bodyText = QString::fromStdString(it.content).trimmed();
+    if (bodyText.isEmpty()) bodyText = QString::fromStdString(it.description).trimmed();
+
+    QString paras;
+    const QStringList lines = bodyText.split(QLatin1Char('\n'));
+    for (const QString& line : lines) {
+        const QString p = line.trimmed();
+        if (!p.isEmpty()) paras += QStringLiteral("<p>%1</p>").arg(newsHtmlEscape(p));
+    }
+    if (paras.isEmpty())
+        paras = QStringLiteral("<p class=\"muted\">(本地暂无正文) —— 点一次「抓取全文(需联网)」即可离线阅读。</p>");
+
+    const QString when = it.epoch > 0
+        ? QDateTime::fromSecsSinceEpoch(it.epoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+        : QStringLiteral("时间未知");
+    const QString link = newsHtmlEscape(QString::fromStdString(it.link));
+    const QString foot = link.isEmpty()
+        ? QString()
+        : QStringLiteral("<div class=\"foot\">原文: <a href=\"%1\">%1</a></div>").arg(link);
+
+    return QStringLiteral(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>"
+        "body{color:#222;line-height:1.75;font-family:'Microsoft YaHei',sans-serif;}"
+        "h1{font-size:20px;line-height:1.4;margin:0 0 8px;}"
+        ".meta{color:#888;font-size:12px;margin-bottom:16px;}"
+        "p{margin:0 0 12px;font-size:14px;}"
+        ".muted{color:#999;}"
+        ".foot{margin-top:26px;padding-top:12px;border-top:1px solid #ddd;font-size:12px;}"
+        "a{color:#0a66c2;}"
+        "</style></head><body>"
+        "<h1>%1</h1>"
+        "<div class=\"meta\">%2 · %3 · %4 · 本地副本</div>"
+        "%5%6"
+        "</body></html>")
+        .arg(newsHtmlEscape(QString::fromStdString(it.title)),
+             newsHtmlEscape(when),
+             newsHtmlEscape(QString::fromStdString(it.source)),
+             newsHtmlEscape(QString::fromStdString(it.category)),
+             paras,
+             foot);
+}
+
+}  // namespace
+
 void MainWindow::onNewsRowActivated(int row) {
     if (!newsTable_ || row < 0 || row >= newsTable_->rowCount()) return;
     QTableWidgetItem* t = newsTable_->item(row, 3);
@@ -2286,7 +2345,7 @@ void MainWindow::showNewsReader(const NewsItem& src) {
 
     auto* row = new QHBoxLayout();
     auto* btnFetch = new QPushButton(QStringLiteral("抓取全文(需联网)"));
-    auto* btnLocal = new QPushButton(QStringLiteral("本地浏览器打开"));
+    auto* btnLocal = new QPushButton(QStringLiteral("导出本地HTML"));
     auto* btnOpen  = new QPushButton(QStringLiteral("网上浏览"));
     auto* btnClose = new QPushButton(QStringLiteral("关闭"));
     row->addWidget(btnFetch);
@@ -2296,21 +2355,19 @@ void MainWindow::showNewsReader(const NewsItem& src) {
     row->addWidget(btnClose);
     lay->addLayout(row);
 
-    auto showBody = [&](const std::string& c) {
-        QString t = QString::fromStdString(c).trimmed();
-        if (t.isEmpty()) {
-            body->setPlainText(QStringLiteral("(本地暂无正文)\n\n点「抓取全文(需联网)」联网取一次, 之后就能离线阅读; 或点「在浏览器打开」看原文。"));
-            tip->setText(QStringLiteral("该条目目前只缓存了标题。"));
-        } else {
-            body->setPlainText(t);
-            tip->setText(QStringLiteral("正文 %1 字, 已缓存在本地, 断网也能阅读。").arg(t.size()));
-        }
+    // 内嵌浏览器视图: 渲染成 HTML 交给 QTextBrowser(窗口内浏览, 点链接才走系统浏览器)
+    auto render = [&]() {
+        body->setHtml(newsItemHtml(it));
+        const QString t = QString::fromStdString(it.content).trimmed();
+        tip->setText(t.isEmpty()
+            ? QStringLiteral("该条目目前只缓存了标题; 点「抓取全文(需联网)」取一次即可离线阅读。")
+            : QStringLiteral("正文 %1 字, 已缓存在本地, 断网也能阅读(Ctrl+滚轮 缩放)。").arg(t.size()));
     };
-    showBody(it.content);
+    render();
 
     connect(btnClose, &QPushButton::clicked, &dlg, &QDialog::accept);
     connect(btnLocal, &QPushButton::clicked, [&]() {
-        openNewsHtmlLocal(it);   // 写成本地 HTML 交给系统浏览器, 离线可看
+        openNewsHtmlLocal(it);   // 导出本地 HTML 文件并用系统浏览器打开(离线可看)
     });
     connect(btnOpen, &QPushButton::clicked, [&]() {
         if (!it.link.empty()) QDesktopServices::openUrl(QUrl(QString::fromStdString(it.link)));
@@ -2329,75 +2386,28 @@ void MainWindow::showNewsReader(const NewsItem& src) {
         QByteArray u8 = convertToUtf8(html);
         std::string txt = extractArticleText(std::string(u8.constData(), u8.size()));
         if (txt.empty()) {
-            tip->setText(QStringLiteral("这个页面抽不出正文(可能是需要 JS 渲染的站点), 建议用「在浏览器打开」。"));
+            tip->setText(QStringLiteral("这个页面抽不出正文(可能是需要 JS 渲染的站点), 建议用「网上浏览」。"));
             return;
         }
         updateNewsContent(dbPath.toStdString(), it.link, txt);
         it.content = txt;
-        showBody(txt);
+        render();
         tip->setText(QStringLiteral("已抓取全文 %1 字并写入本地缓存, 之后断网也能阅读。").arg((int)txt.size()));
     });
 
     dlg.exec();
 }
 
-// 把一条新闻渲染成本地 HTML 文件, 再用系统默认浏览器打开 —— 断网也能看。
-// 文件写在 news.db 同目录的 news_html/ 下, 按标题命名(同一条重复打开会覆盖更新)。
+// 把一条新闻导出成本地 HTML 文件, 再用系统默认浏览器打开 —— 断网也能看。
+// 内容与内嵌浏览器视图完全一致; 文件写在 news.db 同目录的 news_html/ 下,
+// 按标题命名(同一条重复导出会覆盖更新)。
 void MainWindow::openNewsHtmlLocal(const NewsItem& src) {
     QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
     NewsItem it = loadNewsItem(dbPath.toStdString(), src.link);
     if (it.link.empty()) it = src;   // 库里查不到时退回列表上的信息
 
-    QString bodyText = QString::fromStdString(it.content).trimmed();
-    if (bodyText.isEmpty()) bodyText = QString::fromStdString(it.description).trimmed();
-
-    auto esc = [](const QString& s) {
-        QString o = s;
-        o.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
-        o.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
-        o.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
-        return o;
-    };
-
-    QString paras;
-    const QStringList lines = bodyText.split(QLatin1Char('\n'));
-    for (const QString& line : lines) {
-        QString p = line.trimmed();
-        if (!p.isEmpty()) paras += QStringLiteral("<p>%1</p>\n").arg(esc(p));
-    }
-    if (paras.isEmpty())
-        paras = QStringLiteral("<p class=\"muted\">(本地暂无正文) —— 请先在阅读器里点一次"
-                               "「抓取全文(需联网)」, 之后就能离线阅读了。</p>");
-
-    QString when = it.epoch > 0
-        ? QDateTime::fromSecsSinceEpoch(it.epoch).toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"))
-        : QStringLiteral("时间未知");
-    QString link = QString::fromStdString(it.link);
-    QString head = esc(QString::fromStdString(it.title));
-
-    QString html = QStringLiteral(
-        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
-        "<title>%1</title><style>"
-        "body{max-width:820px;margin:32px auto;padding:0 18px;color:#222;line-height:1.75;"
-        "font-family:-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;}"
-        "h1{font-size:24px;line-height:1.4;margin:0 0 10px;}"
-        ".meta{color:#888;font-size:13px;margin-bottom:22px;}"
-        "p{margin:0 0 14px;font-size:16px;}"
-        ".muted{color:#999;}"
-        ".foot{margin-top:34px;padding-top:14px;border-top:1px solid #eee;font-size:13px;}"
-        "a{color:#0a66c2;}"
-        "</style></head><body>"
-        "<h1>%1</h1>"
-        "<div class=\"meta\">%2 · %3 · %4 · 本地离线副本</div>"
-        "%5"
-        "<div class=\"foot\">原文: <a href=\"%6\">%6</a></div>"
-        "</body></html>\n")
-        .arg(head,
-             esc(when),
-             esc(QString::fromStdString(it.source)),
-             esc(QString::fromStdString(it.category)),
-             paras,
-             esc(link));
+    // 复用与内嵌视图完全相同的 HTML, 保证"窗口里看到的"与"导出的文件"一致
+    const QString html = newsItemHtml(it);
 
     QDir dir(QFileInfo(dbPath).absolutePath() + QStringLiteral("/news_html"));
     if (!dir.exists()) QDir().mkpath(dir.absolutePath());
