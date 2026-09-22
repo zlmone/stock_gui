@@ -36,24 +36,21 @@ std::string buildFeedUrl(const NewsQuery& q) {
 
 std::vector<NewsQuery> defaultQueries() {
     std::vector<NewsQuery> q;
-    { NewsQuery a; a.keyword = "股票 OR A股 OR 财经 OR 券商 OR 央行"; a.source = "Google News";
-      a.category = "国内"; a.lang = "zh-CN"; a.region = "CN"; q.push_back(a); }
-    { NewsQuery b; b.keyword = "stock market OR economy OR Federal Reserve OR inflation OR tariffs";
-      b.source = "Google News"; b.category = "国际"; b.lang = "en"; b.region = "US"; q.push_back(b); }
-    { NewsQuery c; c.keyword = "美联储 OR 经济 OR 汇率 OR 黄金 OR 原油 OR 芯片"; c.source = "Google News";
-      c.category = "宏观"; c.lang = "zh-CN"; c.region = "CN"; q.push_back(c); }
-    // 固定源兜底 (Google News 失败仍有 CBC/MarketWatch 可用)
-    { NewsQuery d; d.category = "国际"; d.lang = "en"; d.region = "US";
-      d.url = "https://www.cnbc.com/id/100003114/device/rss/rss.html"; q.push_back(d); }
-    { NewsQuery e; e.category = "国际"; e.lang = "en"; e.region = "US";
-      e.url = "https://www.marketwatch.com/rss/topstories"; q.push_back(e); }
-    // 国内源兜底 (Google News 在国内常被墙; 财联社/华尔街见闻/东方财富 为国内 JSON 快讯源, 均本机验证可用)
-    { NewsQuery f; f.category = "国内"; f.source = "财联社"; f.lang = "zh-CN"; f.region = "CN";
-      f.url = "https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9"; q.push_back(f); }
-    { NewsQuery g; g.category = "宏观"; g.source = "华尔街见闻"; g.lang = "zh-CN"; g.region = "CN";
-      g.url = "https://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=30"; q.push_back(g); }
-    { NewsQuery h; h.category = "国内"; h.source = "东方财富"; h.lang = "zh-CN"; h.region = "CN";
-      h.url = "https://np-listapi.eastmoney.com/comm/web/getNewsByColumns?client=web&biz=web_home_channel&column=350,35,466,467&order=1&needInteractData=0&page_index=1&page_size=30&req_trace=21e65da9-1234-4567-89ab-0123456789ab"; q.push_back(h); }
+    // ⚠ 关键约束: 本程序链接的静态 Qt 构建不含任何 TLS 后端
+    //   (exe 仅导入 WS2_32, 无 secur32.dll/crypt32.dll, 也无 OpenSSL 符号),
+    //   因此程序内发出的 https:// 请求必然 TLS 握手失败、body 为空。
+    //   这正是"新闻源暂时不可用"(updateNews 里 okCount==0)的根本原因 —— 与网络无关。
+    //   故此处只使用实测可用的 http:// 国内 JSON 快讯源。
+    { NewsQuery a; a.source = "新浪财经"; a.category = "国内"; a.lang = "zh-CN"; a.region = "CN";
+      a.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2510&num=30&page=1"; q.push_back(a); }
+    { NewsQuery b; b.source = "新浪财经"; b.category = "国际"; b.lang = "zh-CN"; b.region = "CN";
+      b.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2511&num=30&page=1"; q.push_back(b); }
+    { NewsQuery c; c.source = "东方财富"; c.category = "国内"; c.lang = "zh-CN"; c.region = "CN";
+      c.url = "http://np-listapi.eastmoney.com/comm/web/getNewsByColumns?client=web&biz=web_home_channel&column=350,35,466,467&order=1&needInteractData=0&page_index=1&page_size=30&req_trace=21e65da9-1234-4567-89ab-0123456789ab"; q.push_back(c); }
+    { NewsQuery d; d.source = "华尔街见闻"; d.category = "宏观"; d.lang = "zh-CN"; d.region = "CN";
+      d.url = "http://api-one.wallstcn.com/apiv1/content/lives?channel=global-channel&limit=30"; q.push_back(d); }
+    { NewsQuery e; e.source = "华尔街见闻"; e.category = "国内"; e.lang = "zh-CN"; e.region = "CN";
+      e.url = "http://api-one.wallstcn.com/apiv1/content/lives?channel=a-stock-channel&limit=30"; q.push_back(e); }
     return q;
 }
 
