@@ -2905,6 +2905,24 @@ static QColor watchSignalColor(int score) {
     return QColor(0x20, 0x70, 0xb0);
 }
 
+// 统一盯盘代码形态: 统一成引擎认识的 "600000.SH" 形式。
+// 库里 stocks.code / kline_daily.code 都是带后缀的, engine_.analyze/stockName/latestPb
+// 必须传带后缀的代码; 而腾讯快照表的键也是带后缀的。所以这里一律补齐后缀,
+// 不能像早先那样把后缀剥掉(那会同时打断行情查询和基线指标计算)。
+static QString watchNormCode(const QString& raw) {
+    QString c = raw.trimmed().toUpper();
+    if (c.isEmpty()) return QString();
+    const int dot = c.indexOf('.');
+    const QString pure = (dot > 0) ? c.left(dot) : c;
+    if (pure.size() != 6) return QString();
+    for (const QChar ch : pure) if (!ch.isDigit()) return QString();
+    if (dot > 0) return pure + c.mid(dot);                 // 已有后缀则保留(含 .BJ)
+    const QChar h = pure.at(0);                            // 与 netclient 的 toTencentCode 同规则
+    if (h == QLatin1Char('6') || h == QLatin1Char('9') || h == QLatin1Char('5'))
+        return pure + QStringLiteral(".SH");
+    return pure + QStringLiteral(".SZ");
+}
+
 // 从【股票代码】框导入
 void MainWindow::watchImportFromCodes() {
     if (!codeEdit_) return;
@@ -2912,10 +2930,8 @@ void MainWindow::watchImportFromCodes() {
                                                       Qt::SkipEmptyParts);
     QStringList codes;
     for (const QString& p0 : parts) {
-        QString p = p0.trimmed().toUpper();
-        const int dot = p.indexOf('.');
-        if (dot > 0) p = p.left(dot);                       // 600000.SH -> 600000
-        if (p.size() == 6) codes << p;
+        const QString p = watchNormCode(p0);
+        if (!p.isEmpty()) codes << p;
     }
     if (codes.isEmpty()) {
         if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 【股票代码】框里没有可识别的 6 位代码"));
@@ -2936,10 +2952,8 @@ void MainWindow::watchImportFromTable() {
     for (int r = 0; r < table_->rowCount(); ++r) {
         QTableWidgetItem* it = table_->item(r, 0);
         if (!it) continue;
-        QString c = it->text().trimmed();
-        const int dot = c.indexOf('.');
-        if (dot > 0) c = c.left(dot);
-        if (c.size() == 6) watchCodes_.push_back(c);
+        const QString c = watchNormCode(it->text());
+        if (!c.isEmpty()) watchCodes_.push_back(c);
     }
     watchRebuild();
 }
@@ -2960,10 +2974,8 @@ void MainWindow::watchImportFromSelection() {
     for (const QModelIndex& idx : sel) {
         QTableWidgetItem* it = table_->item(idx.row(), 0);
         if (!it) continue;
-        QString c = it->text().trimmed();
-        const int dot = c.indexOf('.');
-        if (dot > 0) c = c.left(dot);
-        if (c.size() == 6) watchCodes_.push_back(c);
+        const QString c = watchNormCode(it->text());
+        if (!c.isEmpty()) watchCodes_.push_back(c);
     }
     if (watchCodes_.isEmpty()) {
         if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 选中的行里没有可识别的 6 位代码"));

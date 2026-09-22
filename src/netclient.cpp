@@ -599,11 +599,16 @@ QVector<Quote> fetchQuotes(const QStringList& codes) {
     }
 
     for (const QString& c : codes) {
-        auto it = snaps.constFind(c);
+        // parseSnapshot 的键是 fromTencentCode() 的产物(如 "600000.SH"), 带后缀;
+        // 而调用方可能传 "600000" 也可能传 "600000.SH", 这里统一成快照表的键再查,
+        // 否则格式不一致会全部查不到(表现为"一只都盯不上")。
+        QString key = fromTencentCode(toTencentCode(c));
+        auto it = snaps.constFind(key);
+        if (it == snaps.constEnd()) it = snaps.constFind(c);   // 兜底: 再按原样试一次
         if (it == snaps.constEnd()) continue;
         Quote q;
         q.ok       = true;
-        q.code     = c;
+        q.code     = c;                                        // 回传给调用方原本的形态
         q.name     = it->name;
         q.price    = it->price;
         q.prev     = it->prev;
