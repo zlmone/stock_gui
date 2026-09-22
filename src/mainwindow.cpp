@@ -282,6 +282,68 @@ void MainWindow::closeEvent(QCloseEvent* e) {
 }
 
 // ==================== UI 构建 ====================
+// ==================== 实时盯盘: 评分参数(可在界面调整) ====================
+namespace {
+
+struct WatchParamDesc {
+    const char* group;
+    const char* key;
+    const char* label;
+    double WatchScoreCfg::* field;
+    double lo, hi, step;
+    int dec;
+};
+
+// 阈值没有普适答案(风格不同/行情不同都不一样), 所以全部做成可调。
+const WatchParamDesc kWatchParams[] = {
+    { "封顶", "capLimitUp",      "已涨停封顶(保守模式)",        &WatchScoreCfg::capLimitUp,      0, 100, 1, 0 },
+    { "封顶", "capLimitUpLoose", "已涨停封顶(打板模式)",        &WatchScoreCfg::capLimitUpLoose, 0, 100, 1, 0 },
+    { "封顶", "capNearUp",       "接近涨停封顶",               &WatchScoreCfg::capNearUp,       0, 100, 1, 0 },
+    { "封顶", "capLimitDown",    "已跌停封顶",                 &WatchScoreCfg::capLimitDown,    0, 100, 1, 0 },
+    { "封顶", "capDowntrend",    "下跌趋势封顶",               &WatchScoreCfg::capDowntrend,    0, 100, 1, 0 },
+    { "封顶", "capHighPos",      "高位封顶(低吸口径)",          &WatchScoreCfg::capHighPos,      0, 100, 1, 0 },
+    { "封顶", "capLowVol",       "无量追高封顶",               &WatchScoreCfg::capLowVol,       0, 100, 1, 0 },
+    { "封顶", "volThin",         "地量线(量比低于此值算无量)",   &WatchScoreCfg::volThin,         0,   3, 0.05, 2 },
+    { "打板口径分档", "chg1", "强度档1: 当日涨幅 ≥ (%)", &WatchScoreCfg::chg1, -5, 20, 0.5, 1 },
+    { "打板口径分档", "chg2", "强度档2: 当日涨幅 ≥ (%)", &WatchScoreCfg::chg2, -5, 20, 0.5, 1 },
+    { "打板口径分档", "chg3", "强度档3: 当日涨幅 ≥ (%)", &WatchScoreCfg::chg3, -5, 20, 0.5, 1 },
+    { "打板口径分档", "vr1",  "量比档1 ≥",               &WatchScoreCfg::vr1,   0,  5, 0.1, 2 },
+    { "打板口径分档", "vr2",  "量比档2 ≥",               &WatchScoreCfg::vr2,   0,  5, 0.1, 2 },
+    { "打板口径分档", "vr3",  "量比档3 ≥",               &WatchScoreCfg::vr3,   0,  5, 0.1, 2 },
+    { "打板口径分档", "pos1", "60位档1 ≥ (%)",           &WatchScoreCfg::pos1,  0, 100, 1, 0 },
+    { "打板口径分档", "pos2", "60位档2 ≥ (%)",           &WatchScoreCfg::pos2,  0, 100, 1, 0 },
+    { "打板口径分档", "pos3", "60位档3 ≥ (%)",           &WatchScoreCfg::pos3,  0, 100, 1, 0 },
+    { "低吸口径分档", "low1", "60位档1 ≤ (%)",           &WatchScoreCfg::low1,  0, 100, 1, 0 },
+    { "低吸口径分档", "low2", "60位档2 ≤ (%)",           &WatchScoreCfg::low2,  0, 100, 1, 0 },
+    { "低吸口径分档", "low3", "60位档3 ≤ (%)",           &WatchScoreCfg::low3,  0, 100, 1, 0 },
+    { "信号档位", "sigA", "强烈买入 ≥", &WatchScoreCfg::sigA, 0, 100, 1, 0 },
+    { "信号档位", "sigB", "买入 ≥",     &WatchScoreCfg::sigB, 0, 100, 1, 0 },
+    { "信号档位", "sigC", "偏多 ≥",     &WatchScoreCfg::sigC, 0, 100, 1, 0 },
+    { "信号档位", "sigD", "观望 ≥",     &WatchScoreCfg::sigD, 0, 100, 1, 0 },
+    { "信号档位", "sigE", "减仓 ≥",     &WatchScoreCfg::sigE, 0, 100, 1, 0 },
+};
+
+void watchCfgLoad(WatchScoreCfg& c) {
+    QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+    st.beginGroup(QStringLiteral("watchScore"));
+    c.limitMode = st.value(QStringLiteral("limitMode"), c.limitMode).toDouble();
+    for (const auto& d : kWatchParams) {
+        const double def = c.*(d.field);
+        c.*(d.field) = st.value(QString::fromUtf8(d.key), def).toDouble();
+    }
+    st.endGroup();
+}
+
+void watchCfgSave(const WatchScoreCfg& c) {
+    QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+    st.beginGroup(QStringLiteral("watchScore"));
+    st.setValue(QStringLiteral("limitMode"), c.limitMode);
+    for (const auto& d : kWatchParams) st.setValue(QString::fromUtf8(d.key), c.*(d.field));
+    st.endGroup();
+}
+
+}  // namespace
+
 void MainWindow::buildUI() {
     // ---- 菜单栏: 把命令从左侧栏解放出来, 并统一快捷键 ----
     //   标签页 Ctrl+1..5; 主操作 F5/F6/F7
@@ -702,6 +764,11 @@ void MainWindow::buildUI() {
         connect(bImpSel, &QPushButton::clicked, this, &MainWindow::watchImportFromSelection);
         crow->addWidget(bImpSel);
 
+        auto* bCfg = new QPushButton(QStringLiteral("评分参数…"));
+        bCfg->setToolTip(QStringLiteral("调整评分阈值与封顶(涨停处理/分档/信号档位), 改完立即生效并记住"));
+        connect(bCfg, &QPushButton::clicked, this, &MainWindow::watchEditCfg);
+        crow->addWidget(bCfg);
+
         auto* bDetail = new QPushButton(QStringLiteral("查看详情"));
         bDetail->setToolTip(QStringLiteral("打开盯盘表里选中那行的个股详情(双击行也可以)"));
         connect(bDetail, &QPushButton::clicked, this, &MainWindow::watchShowDetail);
@@ -749,6 +816,7 @@ void MainWindow::buildUI() {
             }
         });
         watchTimer_->start(60 * 1000);   // 与默认选项(1 分钟)一致
+        watchCfgLoad(watchCfg_);         // 载入上次的评分参数
 
         watchStatus_ = new QLabel(QStringLiteral("实时盯盘: 未开始 (先点【用股票代码框】导入)"));
         watchStatus_->setWordWrap(true);
@@ -2825,7 +2893,8 @@ void MainWindow::openNewsHtmlLocal(const NewsItem& src) {
 // 买入评分(0-100): 在现有四维指标上叠加实时价, 分数越高越偏向买入。
 // 权重合计 100 —— 趋势 28 / 位置 20 / 行为 20 / 量能 16 / 估值 16,
 // 最后用 Stats::verdict 封顶(下跌趋势、高位不该给高分)。权重可按需调整。
-static int watchScoreOf(const Stats& s, double livePrice, double chgPct, int mode) {
+static int watchScoreOf(const Stats& s, double livePrice, double chgPct, int mode,
+                        const WatchScoreCfg& c) {
     if (livePrice <= 0) livePrice = s.price;
     int sc = 0;
 
@@ -2837,62 +2906,66 @@ static int watchScoreOf(const Stats& s, double livePrice, double chgPct, int mod
     if (s.ma20 > 0 && s.ma5 > s.ma10 && s.ma10 > s.ma20) trend += 7;
 
     if (mode == 0) {
-        // ================= 短线打板 / 追涨 =================
-        // 趋势 30 / 位置 20(越高越强) / 强度 20(当日涨幅) / 量能 20 / 动能 10
+        // ===== 短线打板 / 追涨: 趋势30 / 位置20(越高越强) / 强度20 / 量能20 / 动能10 =====
         sc += trend * 30 / 28;
 
-        if      (s.pos60 >= 85) sc += 20;      // 打板不吃"位置低加分", 反而要接近新高
-        else if (s.pos60 >= 70) sc += 16;
-        else if (s.pos60 >= 55) sc += 12;
-        else if (s.pos60 >= 40) sc += 6;
+        if      (s.pos60 >= c.pos3)         sc += 20;
+        else if (s.pos60 >= c.pos2)         sc += 16;
+        else if (s.pos60 >= c.pos1)         sc += 12;
+        else if (s.pos60 >= c.pos1 - 15.0)  sc += 6;
 
-        if      (chgPct >= 5.0) sc += 20;      // 当日强度
-        else if (chgPct >= 3.0) sc += 16;
-        else if (chgPct >= 1.0) sc += 12;
-        else if (chgPct >= 0.0) sc += 8;
-        else                    sc += 2;
+        if      (chgPct >= c.chg3) sc += 20;
+        else if (chgPct >= c.chg2) sc += 16;
+        else if (chgPct >= c.chg1) sc += 12;
+        else if (chgPct >= 0)      sc += 8;
+        else                       sc += 2;
 
-        if      (s.volRatio >= 2.0) sc += 20;  // 量能要放出来
-        else if (s.volRatio >= 1.5) sc += 15;
-        else if (s.volRatio >= 1.0) sc += 10;
-        else                        sc += 4;
+        if      (s.volRatio >= c.vr3) sc += 20;
+        else if (s.volRatio >= c.vr2) sc += 15;
+        else if (s.volRatio >= c.vr1) sc += 10;
+        else                          sc += 4;
 
-        if      (s.emaRedDays >= 3) sc += 10;  // 连续红柱 = 动能延续
+        if      (s.emaRedDays >= 3) sc += 10;
         else if (s.emaRedDays >= 1) sc += 6;
         else                        sc += 2;
 
-        // 打板不怕高位, 只怕趋势坏; 另外无量追高压一压
-        if (s.verdict.find("下跌趋势") != std::string::npos) { if (sc > 40) sc = 40; }
-        else if (s.volRatio > 0 && s.volRatio < 0.8) { if (sc > 70) sc = 70; }
+        if (s.verdict.find("下跌趋势") != std::string::npos) {
+            if (sc > (int)c.capDowntrend) sc = (int)c.capDowntrend;
+        } else if (s.volRatio > 0 && s.volRatio < c.volThin) {
+            if (sc > (int)c.capLowVol) sc = (int)c.capLowVol;   // 无量追高
+        }
     } else {
-        // ================= 急杀反弹 / 低吸(原口径) =================
-        sc += trend;                                   // 趋势 28
+        // ===== 急杀反弹 / 低吸: 趋势28 / 位置20(越低越好) / 行为20 / 量能16 / 估值16 =====
+        sc += trend;
 
-        if      (s.pos60 <= 25) sc += 20;              // 位置越低越有反弹空间
-        else if (s.pos60 <= 45) sc += 15;
-        else if (s.pos60 <= 65) sc += 10;
-        else if (s.pos60 <= 85) sc += 5;
+        if      (s.pos60 <= c.low1)        sc += 20;
+        else if (s.pos60 <= c.low2)        sc += 15;
+        else if (s.pos60 <= c.low3)        sc += 10;
+        else if (s.pos60 <= c.low3 + 20.0) sc += 5;
 
-        if      (s.fixRate >= 60) sc += 12;            // 行为 20
+        if      (s.fixRate >= 60) sc += 12;
         else if (s.fixRate >= 45) sc += 9;
         else if (s.fixRate >= 30) sc += 6;
         else                      sc += 3;
         if (s.events  >= 5) sc += 3;
         if (s.ztCount >= 2) sc += 5;
 
-        if      (s.volRatio >= 1.5) sc += 16;          // 量能 16
-        else if (s.volRatio >= 1.2) sc += 12;
-        else if (s.volRatio >= 0.8) sc += 8;
-        else                        sc += 4;
+        if      (s.volRatio >= c.vr2)      sc += 16;
+        else if (s.volRatio >= c.vr1)      sc += 12;
+        else if (s.volRatio >= c.volThin)  sc += 8;
+        else                               sc += 4;
 
-        if      (s.pbPct3y < 0)    sc += 8;            // 估值 16
+        if      (s.pbPct3y < 0)    sc += 8;
         else if (s.pbPct3y <= 20)  sc += 16;
         else if (s.pbPct3y <= 40)  sc += 12;
         else if (s.pbPct3y <= 60)  sc += 8;
         else if (s.pbPct3y <= 80)  sc += 4;
 
-        if (s.verdict.find("下跌趋势") != std::string::npos) { if (sc > 45) sc = 45; }
-        else if (s.verdict.find("高位") != std::string::npos) { if (sc > 60) sc = 60; }
+        if (s.verdict.find("下跌趋势") != std::string::npos) {
+            if (sc > (int)c.capDowntrend) sc = (int)c.capDowntrend;
+        } else if (s.verdict.find("高位") != std::string::npos) {
+            if (sc > (int)c.capHighPos) sc = (int)c.capHighPos;
+        }
     }
 
     if (sc > 100) sc = 100;
@@ -2902,7 +2975,7 @@ static int watchScoreOf(const Stats& s, double livePrice, double chgPct, int mod
 
 // 该股的涨跌停幅度(%): 主板 10, 创业板/科创板 20, 北交所 30, ST/*ST 5。
 // 用于实时盯盘识别"已涨停/已跌停" —— 涨停时买不进(排队大概率成交不了),
-// 给"强烈买入"是误导, 所以要在评分阶段做一票否决。
+// 所以默认在评分阶段做一票否决(可在「评分参数」里切换成"打板"模式)。
 static double watchLimitPct(const QString& code, const QString& name) {
     if (name.contains(QStringLiteral("ST"))) return 5.0;
     const QString pure = code.section(QLatin1Char('.'), 0, 0);
@@ -2911,16 +2984,16 @@ static double watchLimitPct(const QString& code, const QString& name) {
         return 20.0;
     if (pure.startsWith(QStringLiteral("8")) || pure.startsWith(QStringLiteral("4"))
         || pure.startsWith(QStringLiteral("9")))
-        return 30.0;                      // 北交所
+        return 30.0;
     return 10.0;
 }
 
-static QString watchSignalOf(int score) {
-    if (score >= 80) return QStringLiteral("强烈买入");
-    if (score >= 65) return QStringLiteral("买入");
-    if (score >= 50) return QStringLiteral("偏多");
-    if (score >= 35) return QStringLiteral("观望");
-    if (score >= 20) return QStringLiteral("减仓");
+static QString watchSignalOf(int score, const WatchScoreCfg& c) {
+    if (score >= (int)c.sigA) return QStringLiteral("强烈买入");
+    if (score >= (int)c.sigB) return QStringLiteral("买入");
+    if (score >= (int)c.sigC) return QStringLiteral("偏多");
+    if (score >= (int)c.sigD) return QStringLiteral("观望");
+    if (score >= (int)c.sigE) return QStringLiteral("减仓");
     return QStringLiteral("卖出");
 }
 
@@ -3075,8 +3148,8 @@ void MainWindow::watchTick() {
         r.fixRate  = s.fixRate;
         r.bt       = s.backtest;
         r.chip     = s.chipProfit;
-        r.score    = watchScoreOf(s, live, r.chg, mode);
-        r.sig      = watchSignalOf(r.score);
+        r.score    = watchScoreOf(s, live, r.chg, mode, watchCfg_);
+        r.sig      = watchSignalOf(r.score, watchCfg_);
         r.qtime    = q.time.isEmpty() ? q.date : q.time;
 
         // ---- 涨跌停一票否决 ----
@@ -3086,18 +3159,22 @@ void MainWindow::watchTick() {
         const bool atLimitUp   = r.chg >= lim - 0.3;
         const bool atLimitDown = r.chg <= -(lim - 0.3);
         const bool nearLimitUp = !atLimitUp && r.chg >= lim - 2.0;
+        const bool loose = (watchCfg_.limitMode >= 0.5);   // true=打板模式
         if (atLimitUp) {
             const bool sealed = r.price > 0 && q.high > 0 && r.price >= q.high - 1e-6;
-            if (r.score > 50) r.score = 50;
-            r.sig = sealed ? QStringLiteral("已涨停(封板)")
-                           : QStringLiteral("已涨停(炸板)");
+            const double cap = loose ? watchCfg_.capLimitUpLoose : watchCfg_.capLimitUp;
+            if (r.score > cap) r.score = (int)cap;
+            if (loose) r.sig = sealed ? QStringLiteral("涨停(封板·可排板)")
+                                      : QStringLiteral("涨停(炸板)");
+            else       r.sig = sealed ? QStringLiteral("已涨停(封板)")
+                                      : QStringLiteral("已涨停(炸板)");
             r.limitState = 1;
         } else if (atLimitDown) {
-            if (r.score > 15) r.score = 15;
+            if (r.score > watchCfg_.capLimitDown) r.score = (int)watchCfg_.capLimitDown;
             r.sig = QStringLiteral("已跌停");
             r.limitState = 2;
         } else if (nearLimitUp) {
-            if (r.score > 75) r.score = 75;    // 追高到临停, 不给满档
+            if (r.score > watchCfg_.capNearUp) r.score = (int)watchCfg_.capNearUp;
             r.sig = QStringLiteral("接近涨停");
             r.limitState = 3;
         }
@@ -3156,6 +3233,80 @@ void MainWindow::watchTick() {
                  ? QStringLiteral(" (有 %1 只没取到行情)").arg(watchCodes_.size() - rows.size())
                  : QString()));
     }
+}
+
+// 「评分参数」对话框: 改完确定即生效并记住
+void MainWindow::watchEditCfg() {
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("评分参数 — 实时盯盘"));
+    dlg.resize(540, 680);
+    auto* outer = new QVBoxLayout(&dlg);
+
+    auto* tip = new QLabel(QStringLiteral("改完点【确定】立即生效并记住; 【恢复默认】还原。"
+                                          "权重(趋势/位置/强度/量能等满分)是固定的, 这里调的是阈值与封顶。"));
+    tip->setWordWrap(true);
+    tip->setStyleSheet(QStringLiteral("color:#777;"));
+    outer->addWidget(tip);
+
+    WatchScoreCfg cfg = watchCfg_;          // 用副本编辑, 确定才生效
+
+    auto* scroll = new QScrollArea();
+    scroll->setWidgetResizable(true);
+    auto* inner = new QWidget();
+    auto* form = new QFormLayout(inner);
+    form->setContentsMargins(4, 4, 4, 4);
+
+    auto* modeBox = new QComboBox();
+    modeBox->addItem(QStringLiteral("保守: 已涨停不推荐买入"), 0);
+    modeBox->addItem(QStringLiteral("打板: 已涨停仍给高分(自己去排板)"), 1);
+    modeBox->setCurrentIndex(cfg.limitMode >= 0.5 ? 1 : 0);
+    form->addRow(QStringLiteral("★ 涨停处理"), modeBox);
+
+    QVector<QPair<const WatchParamDesc*, QDoubleSpinBox*>> bind;
+    QString cur;
+    for (const auto& d : kWatchParams) {
+        const QString g = QString::fromUtf8(d.group);
+        if (g != cur) {
+            cur = g;
+            auto* h = new QLabel(QStringLiteral("── %1 ──").arg(g));
+            h->setStyleSheet(QStringLiteral("color:#666;font-weight:bold;"));
+            form->addRow(h);
+        }
+        auto* sp = new QDoubleSpinBox();
+        sp->setRange(d.lo, d.hi);
+        sp->setSingleStep(d.step);
+        sp->setDecimals(d.dec);
+        sp->setValue(cfg.*(d.field));
+        form->addRow(QString::fromUtf8(d.label), sp);
+        bind.push_back(qMakePair(&d, sp));
+    }
+    scroll->setWidget(inner);
+    outer->addWidget(scroll, 1);
+
+    auto* brow = new QHBoxLayout();
+    auto* bReset  = new QPushButton(QStringLiteral("恢复默认"));
+    auto* bOk     = new QPushButton(QStringLiteral("确定"));
+    auto* bCancel = new QPushButton(QStringLiteral("取消"));
+    brow->addWidget(bReset);
+    brow->addStretch(1);
+    brow->addWidget(bOk);
+    brow->addWidget(bCancel);
+    outer->addLayout(brow);
+
+    connect(bCancel, &QPushButton::clicked, &dlg, &QDialog::reject);
+    connect(bOk,     &QPushButton::clicked, &dlg, &QDialog::accept);
+    connect(bReset,  &QPushButton::clicked, &dlg, [&]() {
+        const WatchScoreCfg def;
+        modeBox->setCurrentIndex(def.limitMode >= 0.5 ? 1 : 0);
+        for (auto& pr : bind) pr.second->setValue(def.*(pr.first->field));
+    });
+
+    if (dlg.exec() != QDialog::Accepted) return;
+    cfg.limitMode = (modeBox->currentIndex() == 1) ? 1.0 : 0.0;
+    for (auto& pr : bind) cfg.*(pr.first->field) = pr.second->value();
+    watchCfg_ = cfg;
+    watchCfgSave(watchCfg_);
+    watchTick();                            // 立即按新参数重算
 }
 
 // 打开盯盘表里选中那行的个股详情(与体检表双击看到的是同一个弹窗)

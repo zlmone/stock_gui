@@ -13,6 +13,25 @@
 
 class QsciScintilla;   // QScintilla 源码编辑器(仅用指针, 完整头文件在 mainwindow.cpp 中引入)
 
+// 实时盯盘评分参数 —— 全部可在「评分参数」对话框里调整并持久化。
+// 阈值没有普适答案(不同风格/不同行情都不同), 所以不写死。
+struct WatchScoreCfg {
+    double limitMode    = 0;     // 0=保守(已涨停不推荐) 1=打板(已涨停仍给分)
+    double capLimitUp   = 50;    // 已涨停封顶(保守模式)
+    double capLimitUpLoose = 95; // 已涨停封顶(打板模式)
+    double capNearUp    = 75;    // 接近涨停封顶
+    double capLimitDown = 15;    // 已跌停封顶
+    double capDowntrend = 40;    // 下跌趋势封顶
+    double capHighPos   = 60;    // 高位封顶(低吸口径)
+    double capLowVol    = 70;    // 无量追高封顶
+    double volThin      = 0.8;   // 地量线(量比低于此值算"无量")
+    double chg1 = 1.0, chg2 = 3.0, chg3 = 5.0;   // 强度分档: 当日涨幅 %
+    double vr1  = 1.0, vr2  = 1.5, vr3  = 2.0;   // 量能分档: 量比
+    double pos1 = 55, pos2 = 70, pos3 = 85;      // 打板口径: 60位分档
+    double low1 = 25, low2 = 45, low3 = 65;      // 低吸口径: 60位分档
+    double sigA = 80, sigB = 65, sigC = 50, sigD = 35, sigE = 20;   // 信号档位
+};
+
 class QTableWidget;
 class QLineEdit;
 class QLabel;
@@ -72,6 +91,7 @@ private slots:
     void watchImportFromTable();  // 用当前【四维体检】结果里的股票
     void watchImportFromSelection(); // 只用【四维体检】表里选中的行
     void watchShowDetail();       // 打开盯盘表里选中那行的个股详情
+    void watchEditCfg();          // 打开"评分参数"对话框
     void openNewsHtmlLocal(const NewsItem& it); // 把正文渲染成本地 HTML, 用系统浏览器打开(离线可看)
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
                                     int timeoutMs, QString* err);  // 单 feed 同步拉取
@@ -185,6 +205,7 @@ private:
     class QTimer*       watchTimer_ = nullptr;
     class QLabel*       watchStatus_ = nullptr;
     QHash<QString, Stats> watchBase_;   // 基线四维指标(按代码缓存, 只在导入时重算)
+    WatchScoreCfg         watchCfg_;    // 评分参数(可在界面调整, 存 QSettings)
     QVector<QString>      watchCodes_;  // 正在盯的股票
     class QSplitter*    splitter_ = nullptr;     // 主分栏(用于记忆左右宽度)
     class QStackedWidget* resultStack_ = nullptr; // 四维体检页内的两个结果视图(个股体检/形态筛选)
