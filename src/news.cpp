@@ -554,14 +554,26 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items) {
     if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK)
         return 0;
     ensureSchema(db);
+    // 先记录当前行数, 用于精确统计本次"新增"
+    long long before = 0;
+    {
+        sqlite3_stmt* cs = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM news_items", -1, &cs, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(cs) == SQLITE_ROW) before = (long long)sqlite3_column_int64(cs, 0);
+            sqlite3_finalize(cs);
+        }
+    }
+
+    // 用 OR REPLACE 而非 OR IGNORE: 同一 link 再次抓到时会刷新 title/时间等字段.
+    // 否则旧版本因解析器缺陷写进库的空标题会因"去重跳过"而永远留在缓存里,
+    // 即使解析器已经修好, 界面上依然显示无标题.
     sqlite3_stmt* ins = nullptr;
     if (sqlite3_prepare_v2(db,
-        "INSERT OR IGNORE INTO news_items(link,title,source,category,description,epoch) "
+        "INSERT OR REPLACE INTO news_items(link,title,source,category,description,epoch) "
         "VALUES(?,?,?,?,?,?)", -1, &ins, nullptr) != SQLITE_OK) {
         sqlite3_close(db);
         return 0;
     }
-    int inserted = 0;
     for (auto& it : items) {
         sqlite3_bind_text(ins, 1, it.link.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(ins, 2, it.title.c_str(), -1, SQLITE_TRANSIENT);
@@ -569,14 +581,23 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items) {
         sqlite3_bind_text(ins, 4, it.category.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(ins, 5, it.description.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(ins, 6, (sqlite3_int64)it.epoch);
-        sqlite3_step(ins);                 // INSERT 返回 SQLITE_DONE
-        if (sqlite3_changes(db) > 0) inserted++;  // OR IGNORE 去重: 新增才计入
+        sqlite3_step(ins);
         sqlite3_reset(ins);
         sqlite3_clear_bindings(ins);
     }
     sqlite3_finalize(ins);
+
+    long long after = 0;
+    {
+        sqlite3_stmt* cs = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM news_items", -1, &cs, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(cs) == SQLITE_ROW) after = (long long)sqlite3_column_int64(cs, 0);
+            sqlite3_finalize(cs);
+        }
+    }
     sqlite3_close(db);
-    return inserted;
+    long long added = after - before;
+    return added > 0 ? (int)added : 0;
 }
 
 std::vector<NewsItem> loadNews(const std::string& dbPath, const std::string& categoryFilter) {
