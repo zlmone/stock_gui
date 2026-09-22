@@ -2120,21 +2120,32 @@ void MainWindow::updateNews() {
     // 顺手补抓全文(离线阅读用):
     //   财联社 / 华尔街见闻的接口本身就返回完整正文, 无需抓页面
     //   (财联社详情页还是 JS 渲染的, 抓了也是空);
-    //   这里只补"接口只给摘要"的新浪财经 / 东方财富, 并对条数、单条超时、
-    //   总耗时都设了闸, 失败静默跳过 —— 保证网络异常时更新也不会长时间卡住。
+    //   这里只补"接口只给摘要"的新浪财经 / 东方财富。
+    // "本地已经有了的就不再下载": 库里正文已达到 kEnoughLen 的条目直接跳过,
+    //   所以同一条只会被下载一次; 每次只补本地还没有全文的那些, 直到补齐为止。
+    //   另外给单条超时与整体耗时都设了安全阀, 失败静默跳过。
     int fetchedText = 0;
     {
-        const int    kMaxFetch  = 20;      // 每次更新最多补抓 20 条
+        const int    kMaxFetch  = 50;      // 每次更新最多补抓 50 条
         const int    kTimeoutMs = 6000;    // 单条抓取超时
-        const int    kBudgetMs  = 25000;   // 补抓阶段总耗时上限(安全阀)
-        const size_t kEnoughLen = 400;     // 已有正文达到这个长度就认为够全, 不再抓
-        QElapsedTimer budget; budget.start();
+        const int    kBudgetMs  = 45000;   // 补抓阶段总耗时上限(安全阀)
+        const size_t kEnoughLen = 800;     // 正文达到此长度即视为已抓到全文, 不再下载
+        // 先筛出候选: 新浪/东财, 且本地还没有全文
+        std::vector<NewsItem*> cand;
         for (auto& it : all) {
-            if (fetchedText >= kMaxFetch || budget.elapsed() > kBudgetMs) break;
             if (it.source != "新浪财经" && it.source != "东方财富") continue;
             if (it.link.empty()) continue;
-            // 库里已有足够长的正文(之前补抓过)就跳过, 避免每次更新重复抓同一条
             if (loadNewsItem(dbPath.toStdString(), it.link).content.size() >= kEnoughLen) continue;
+            cand.push_back(&it);
+        }
+        // 优先补最新的
+        std::sort(cand.begin(), cand.end(),
+                  [](const NewsItem* x, const NewsItem* y) { return x->epoch > y->epoch; });
+
+        QElapsedTimer budget; budget.start();
+        for (NewsItem* p : cand) {
+            if (fetchedText >= kMaxFetch || budget.elapsed() > kBudgetMs) break;
+            NewsItem& it = *p;
             status_->setText(QStringLiteral("补抓全文 %1/%2: %3")
                 .arg(fetchedText + 1).arg(kMaxFetch)
                 .arg(QString::fromStdString(it.title).left(20)));
