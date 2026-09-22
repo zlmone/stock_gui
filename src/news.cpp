@@ -34,6 +34,10 @@ std::string buildFeedUrl(const NewsQuery& q) {
          + "&hl=" + hl + "&gl=" + gl + "&ceid=" + ceid;
 }
 
+// 条目最大"年龄": 超过这个时长的视为陈年旧文, 解析时丢弃、缓存时清理。
+// 背景: 新浪部分滚动频道会混入 2024-2025 的旧文, 会让列表出现很老的时间。
+static const long long kMaxNewsAgeSec = 30LL * 24 * 3600;
+
 std::vector<NewsQuery> defaultQueries() {
     std::vector<NewsQuery> q;
     // 说明: 静态 Qt 现在构建时已启用 Windows Schannel TLS 后端
@@ -41,10 +45,13 @@ std::vector<NewsQuery> defaultQueries() {
     //   具备完整 https 能力, 因此 https 源同样可用。
     //   下面同时保留一批实测可用的 http:// 源作冗余: 只要有任一源成功,
     //   updateNews 的 okCount 就 >0, 不会因单源故障而整体显示"新闻源暂时不可用"。
+    // 注意: lid 必须选"当天滚动"的频道。先前用的 2510/2511 实测返回的是
+    // 2024-2025 年的旧文(30 条里 0 条是当天), 会让新闻列表满是老时间。
+    // 2509 = 财经要闻, 2518 = 国际, 实测均为当天滚动。
     { NewsQuery a; a.source = "新浪财经"; a.category = "国内"; a.lang = "zh-CN"; a.region = "CN";
-      a.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2510&num=30&page=1"; q.push_back(a); }
+      a.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&num=30&page=1"; q.push_back(a); }
     { NewsQuery b; b.source = "新浪财经"; b.category = "国际"; b.lang = "zh-CN"; b.region = "CN";
-      b.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2511&num=30&page=1"; q.push_back(b); }
+      b.url = "http://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2518&num=30&page=1"; q.push_back(b); }
     { NewsQuery c; c.source = "东方财富"; c.category = "国内"; c.lang = "zh-CN"; c.region = "CN";
       c.url = "http://np-listapi.eastmoney.com/comm/web/getNewsByColumns?client=web&biz=web_home_channel&column=350,35,466,467&order=1&needInteractData=0&page_index=1&page_size=30&req_trace=21e65da9-1234-4567-89ab-0123456789ab"; q.push_back(c); }
     { NewsQuery d; d.source = "华尔街见闻"; d.category = "宏观"; d.lang = "zh-CN"; d.region = "CN";
@@ -596,6 +603,8 @@ std::vector<NewsItem> parseJsonFeed(const std::string& body, const std::string& 
         for(int i=0; kkeys[i]; i++){ ep=epochFrom(item.find(kkeys[i])); if(ep>0) break; }
         while(ep>1000000000000LL) ep/=1000;   // 毫秒->秒 (如 wallstcn display_time)
         it.epoch = ep;
+        // 丢弃过老的内容(个别源会混入陈年旧文)
+        if (ep > 0 && ep < (long long)time(nullptr) - kMaxNewsAgeSec) continue;
         if(!it.title.empty() || !it.link.empty()) out.push_back(it);
     }
     return out;
@@ -639,6 +648,17 @@ int cacheNews(const std::string& dbPath, std::vector<NewsItem>& items) {
     if (sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK)
         return 0;
     ensureSchema(db);
+    // 清理缓存中的陈年旧文(早期用了会返回旧文的频道, 或个别源混入的旧稿),
+    // 免得新闻列表里出现很老的时间。放在计数之前, 不影响"新增"的统计。
+    {
+        sqlite3_stmt* del = nullptr;
+        if (sqlite3_prepare_v2(db, "DELETE FROM news_items WHERE epoch > 0 AND epoch < ?1",
+                               -1, &del, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(del, 1, (sqlite3_int64)((long long)time(nullptr) - kMaxNewsAgeSec));
+            sqlite3_step(del);
+            sqlite3_finalize(del);
+        }
+    }
     // 先记录当前行数, 用于精确统计本次"新增"
     long long before = 0;
     {
