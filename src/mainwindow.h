@@ -155,6 +155,7 @@ private:
     class QPushButton*  btnUpdateNews_ = nullptr;
     class QComboBox*    newsInterval_ = nullptr;
     class QComboBox*    newsOpenMode_ = nullptr;  // 双击打开方式: 程序内 / 本地浏览器 / 网上浏览
+    class QGroupBox*    codeStudioBox_ = nullptr;  // 策略代码工作室(作为右侧独立标签页, 便于最大化编辑)
     class QTimer*       newsTimer_ = nullptr;
     QNetworkAccessManager* newsNM_ = nullptr;
 
