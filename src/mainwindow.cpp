@@ -2900,6 +2900,21 @@ static int watchScoreOf(const Stats& s, double livePrice, double chgPct, int mod
     return sc;
 }
 
+// 该股的涨跌停幅度(%): 主板 10, 创业板/科创板 20, 北交所 30, ST/*ST 5。
+// 用于实时盯盘识别"已涨停/已跌停" —— 涨停时买不进(排队大概率成交不了),
+// 给"强烈买入"是误导, 所以要在评分阶段做一票否决。
+static double watchLimitPct(const QString& code, const QString& name) {
+    if (name.contains(QStringLiteral("ST"))) return 5.0;
+    const QString pure = code.section(QLatin1Char('.'), 0, 0);
+    if (pure.startsWith(QStringLiteral("300")) || pure.startsWith(QStringLiteral("301")) ||
+        pure.startsWith(QStringLiteral("688")) || pure.startsWith(QStringLiteral("689")))
+        return 20.0;
+    if (pure.startsWith(QStringLiteral("8")) || pure.startsWith(QStringLiteral("4"))
+        || pure.startsWith(QStringLiteral("9")))
+        return 30.0;                      // 北交所
+    return 10.0;
+}
+
 static QString watchSignalOf(int score) {
     if (score >= 80) return QStringLiteral("强烈买入");
     if (score >= 65) return QStringLiteral("买入");
@@ -3038,6 +3053,7 @@ void MainWindow::watchTick() {
         QString code, name, sig, qtime;
         double price = 0, chg = 0, volRatio = 0, vsMa20 = 0, pos60 = 0,
                fixRate = 0, bt = 0, chip = 0;
+        int limitState = 0;   // 0=正常 1=涨停 2=跌停 3=接近涨停
         int score = 0;
     };
     QVector<Row> rows;
@@ -3062,6 +3078,29 @@ void MainWindow::watchTick() {
         r.score    = watchScoreOf(s, live, r.chg, mode);
         r.sig      = watchSignalOf(r.score);
         r.qtime    = q.time.isEmpty() ? q.date : q.time;
+
+        // ---- 涨跌停一票否决 ----
+        // 涨停(尤其封板)时买不进, 不能建议"强烈买入"; 跌停同理要回避。
+        // 用"是否封在最高价"区分封板/炸板, 给出更准确的提示。
+        const double lim = watchLimitPct(q.code, r.name);
+        const bool atLimitUp   = r.chg >= lim - 0.3;
+        const bool atLimitDown = r.chg <= -(lim - 0.3);
+        const bool nearLimitUp = !atLimitUp && r.chg >= lim - 2.0;
+        if (atLimitUp) {
+            const bool sealed = r.price > 0 && q.high > 0 && r.price >= q.high - 1e-6;
+            if (r.score > 50) r.score = 50;
+            r.sig = sealed ? QStringLiteral("已涨停(封板)")
+                           : QStringLiteral("已涨停(炸板)");
+            r.limitState = 1;
+        } else if (atLimitDown) {
+            if (r.score > 15) r.score = 15;
+            r.sig = QStringLiteral("已跌停");
+            r.limitState = 2;
+        } else if (nearLimitUp) {
+            if (r.score > 75) r.score = 75;    // 追高到临停, 不给满档
+            r.sig = QStringLiteral("接近涨停");
+            r.limitState = 3;
+        }
         rows.push_back(r);
     }
 
@@ -3095,7 +3134,11 @@ void MainWindow::watchTick() {
                             : (x.chg < 0 ? QColor(0x20, 0x70, 0xb0) : QColor(0x60, 0x60, 0x60));
             if (auto* t = watchTable_->item(r, 3)) t->setForeground(cc);
             if (auto* t = watchTable_->item(r, 2)) t->setForeground(cc);
-            const QColor sc = watchSignalColor(x.score);
+            // 涨跌停时用警示色: 涨停不是"看多绿"(买不进), 跌停是回避
+            QColor sc = watchSignalColor(x.score);
+            if (x.limitState == 1)      sc = QColor(0xd8, 0x60, 0x20);   // 涨停/接近涨停: 橙
+            else if (x.limitState == 3) sc = QColor(0xc8, 0x8a, 0x20);
+            else if (x.limitState == 2) sc = QColor(0x20, 0x70, 0xb0);   // 跌停: 蓝
             if (auto* t = watchTable_->item(r, 10)) { t->setForeground(sc); QFont f = t->font(); f.setBold(true); t->setFont(f); }
             if (auto* t = watchTable_->item(r, 11)) { t->setForeground(sc); QFont f = t->font(); f.setBold(true); t->setFont(f); }
             if (x.score >= 65) buyCnt++;
