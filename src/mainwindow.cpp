@@ -271,6 +271,10 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
     st.setValue(QStringLiteral("geometry"), saveGeometry());
     st.setValue(QStringLiteral("maximized"), isMaximized());
+    // 一并记住界面状态, 下次打开接着上次的样子
+    if (splitter_) st.setValue(QStringLiteral("ui/splitter"), splitter_->saveState());
+    if (rightTabs_) st.setValue(QStringLiteral("ui/lastTab"), rightTabs_->currentIndex());
+    if (codeEdit_) st.setValue(QStringLiteral("ui/codes"), codeEdit_->text());
     QMainWindow::closeEvent(e);
 }
 
@@ -312,10 +316,10 @@ void MainWindow::buildUI() {
         connect(aSector, &QAction::triggered, this, &MainWindow::showSectorStats);
 
         auto* mView = menuBar()->addMenu(QStringLiteral("视图(&V)"));
-        const QString tabNames[5] = { QStringLiteral("四维体检"), QStringLiteral("策略回测"),
-                                      QStringLiteral("形态筛选"), QStringLiteral("新闻资讯"),
-                                      QStringLiteral("策略代码") };
-        for (int i = 0; i < 5; ++i) {
+        // 与右侧实际标签页一一对应(4 个: 四维体检/策略/形态筛选/新闻资讯)
+        const QString tabNames[4] = { QStringLiteral("四维体检"), QStringLiteral("策略"),
+                                      QStringLiteral("形态筛选"), QStringLiteral("新闻资讯") };
+        for (int i = 0; i < 4; ++i) {
             auto* a = mView->addAction(tabNames[i]);
             a->setShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(i + 1)));
             connect(a, &QAction::triggered, this, [this, i]() {
@@ -528,14 +532,14 @@ void MainWindow::buildUI() {
     newsNM_ = new QNetworkAccessManager(this);
     newsTimer_ = new QTimer(this);
     connect(newsTimer_, &QTimer::timeout, this, [this]() {
-        if (newsOffline()) { status_->setText(QStringLiteral("新闻源离线: 暂停自动刷新")); return; }
+        if (newsOffline()) { newsStatus_->setText(QStringLiteral("新闻源离线: 暂停自动刷新")); return; }
         updateNews();
     });
 
     auto* newsWidget = new QWidget();
     auto* newsLay = new QVBoxLayout(newsWidget);
     auto* newsCtl = new QHBoxLayout();
-    btnUpdateNews_ = new QPushButton(QStringLiteral("\u27f3 更新"));
+    btnUpdateNews_ = new QPushButton(QStringLiteral("\u27f3 更新新闻"));
     btnUpdateNews_->setMinimumHeight(28);
     btnUpdateNews_->setToolTip(QStringLiteral("抓取全部财经源并刷新列表"));
     connect(btnUpdateNews_, &QPushButton::clicked, this, &MainWindow::updateNews);
@@ -594,6 +598,10 @@ void MainWindow::buildUI() {
     newsTable_->setColumnWidth(0, 150);
     connect(newsTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) { onNewsRowActivated(row); });
     newsLay->addWidget(newsTable_, 1);
+    newsStatus_ = new QLabel(QStringLiteral("新闻: 尚未更新"));
+    newsStatus_->setWordWrap(true);
+    newsStatus_->setStyleSheet(QStringLiteral("color:#666;"));
+    newsLay->addWidget(newsStatus_);
     rightTabs_->addTab(newsWidget, QStringLiteral("新闻资讯"));
 
     // (策略代码工作室已并入上面的「策略」页, 与回测结果上下分栏)
@@ -609,12 +617,23 @@ void MainWindow::buildUI() {
     rv->addLayout(statusRow);
 
     // ---- 分栏 ----
-    auto* splitter = new QSplitter(Qt::Horizontal);
-    splitter->addWidget(leftBox);
-    splitter->addWidget(right);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({350, 930});
-    mainLay->addWidget(splitter);
+    splitter_ = new QSplitter(Qt::Horizontal);
+    splitter_->addWidget(leftBox);
+    splitter_->addWidget(right);
+    splitter_->setStretchFactor(1, 1);
+    splitter_->setSizes({ 350, 930 });
+    mainLay->addWidget(splitter_);
+
+    // ---- 恢复上次的界面状态(分割条位置 / 上次标签页 / 上次股票池) ----
+    {
+        QSettings st(QStringLiteral("stock_gui"), QStringLiteral("StockGui"));
+        const QByteArray sp = st.value(QStringLiteral("ui/splitter")).toByteArray();
+        if (!sp.isEmpty()) splitter_->restoreState(sp);
+        const int tab = st.value(QStringLiteral("ui/lastTab"), 0).toInt();
+        if (tab >= 0 && tab < rightTabs_->count()) rightTabs_->setCurrentIndex(tab);
+        const QString codes = st.value(QStringLiteral("ui/codes")).toString();
+        if (!codes.isEmpty() && codeEdit_) codeEdit_->setText(codes);
+    }
 
     setCentralWidget(central);
 }
@@ -623,7 +642,8 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     // (更新数据 / 开始体检 / 全市场扫描 三个主操作已移到左侧顶部固定操作条)
 
     // ---------- 股票代码 ----------
-    auto* gbCode = new QGroupBox(QStringLiteral("股票代码 (逗号/空格分隔)"));
+    auto* gbCode = new QGroupBox(QStringLiteral("股票代码"));
+    gbCode->setToolTip(QStringLiteral("多个代码用逗号或空格分隔"));
     auto* gl = new QVBoxLayout(gbCode);
     codeEdit_ = new QLineEdit();
     codeEdit_->setPlaceholderText(QStringLiteral("002385.SZ, 600519, 002730"));
@@ -634,7 +654,8 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     sv->addWidget(gbCode);
 
     // ---------- 策略参数 ----------
-    auto* gbParam = new QGroupBox(QStringLiteral("体检口径 (第1页修复率/回测列专用)"));
+    auto* gbParam = new QGroupBox(QStringLiteral("体检口径"));
+    gbParam->setToolTip(QStringLiteral("只影响【四维体检】页的修复率/回测列; 策略自身参数在 .lua 文件里"));
     auto* fl = new QFormLayout(gbParam);
     dipSpin_ = new QDoubleSpinBox();
     dipSpin_->setRange(-15, -3); dipSpin_->setDecimals(1); dipSpin_->setSingleStep(0.5);
@@ -732,7 +753,8 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     filterBox_ = gbF;
 
     // ---------- 预设策略 ----------
-    auto* gbPre = new QGroupBox(QStringLiteral("预设策略 (一键配置)"));
+    auto* gbPre = new QGroupBox(QStringLiteral("预设策略"));
+    gbPre->setToolTip(QStringLiteral("一键套用常见筛选组合(会覆盖上面的筛选条件)"));
     auto* pg = new QGridLayout(gbPre);
     struct Preset { const char* name; int id; };
     Preset presets[] = {
@@ -749,7 +771,8 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     presetBox_ = gbPre;       // 与筛选条件同属"筛结果", 挂到"四维体检"页顶部
 
     // ---------- 策略回测 (Lua 脚本) ----------
-    auto* gbBt = new QGroupBox(QStringLiteral("策略回测 (Lua)\n各策略参数在 strategies/*.lua 文件顶部编辑"));
+    auto* gbBt = new QGroupBox(QStringLiteral("策略回测 (Lua)"));
+    gbBt->setToolTip(QStringLiteral("各策略的参数在 strategies/*.lua 文件顶部的 params 块里编辑"));
     auto* bvl = new QVBoxLayout(gbBt);
     stratCombo_ = new QComboBox();
     if (bt_) {
@@ -807,7 +830,8 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     bvl->addWidget(btnBt3_);
 
     // ---------- 代码工作室 (内联编辑 on_bar/on_scan 源码) ----------
-    auto* gbEd = new QGroupBox(QStringLiteral("策略代码工作室\n(改完先点“检查策略语法”, 有语法错误不写盘)"));
+    auto* gbEd = new QGroupBox(QStringLiteral("策略代码"));
+    gbEd->setToolTip(QStringLiteral("直接编辑 .lua 源码; 改完先点「检查策略语法」, 有语法错误不会写盘, 写前自动 .bak 备份"));
     auto* edvl = new QVBoxLayout(gbEd);
     // 专用代码编辑器: QScintilla + 官方 Lua 词法器
     // (行号栏 / 括号匹配 / 自动缩进 / 当前行高亮 / 撤销重做 / 折叠 都由它提供)
@@ -2292,7 +2316,7 @@ void MainWindow::updateNews() {
     int total = (int)defaultQueries().size();
     progress_->setRange(0, total);
     progress_->setValue(0);
-    status_->setText(QStringLiteral("抓取新闻: 0/%1 ...").arg(total));
+    newsStatus_->setText(QStringLiteral("抓取新闻: 0/%1 ...").arg(total));
 
     QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
     std::vector<NewsItem> all;
@@ -2304,7 +2328,7 @@ void MainWindow::updateNews() {
         done++;
         progress_->setValue(done);
         if (body.isEmpty()) {
-            status_->setText(QStringLiteral("抓取 %1 失败: %2")
+            newsStatus_->setText(QStringLiteral("抓取 %1 失败: %2")
                 .arg(QString::fromStdString(q.source)).arg(err));
             continue;
         }
@@ -2315,7 +2339,7 @@ void MainWindow::updateNews() {
             okCount++;
             for (auto& it : items) all.push_back(it);
         }
-        status_->setText(QStringLiteral("[%1/%2] %3: 解析 %4 条")
+        newsStatus_->setText(QStringLiteral("[%1/%2] %3: 解析 %4 条")
             .arg(done).arg(total).arg(QString::fromStdString(q.source)).arg(items.size()));
     }
 
@@ -2323,7 +2347,7 @@ void MainWindow::updateNews() {
         g_newsFailures++;
         progress_->setVisible(false);
         btnUpdateNews_->setEnabled(true);
-        status_->setText(QStringLiteral("新闻源暂时不可用, 请稍后重试"));
+        newsStatus_->setText(QStringLiteral("新闻源暂时不可用, 请稍后重试"));
         return;
     }
     g_newsFailures = 0;
@@ -2359,7 +2383,7 @@ void MainWindow::updateNews() {
         for (NewsItem* p : cand) {
             if (fetchedText >= kMaxFetch || budget.elapsed() > kBudgetMs) break;
             NewsItem& it = *p;
-            status_->setText(QStringLiteral("补抓全文 %1/%2: %3")
+            newsStatus_->setText(QStringLiteral("补抓全文 %1/%2: %3")
                 .arg(fetchedText + 1).arg(kMaxFetch)
                 .arg(QString::fromStdString(it.title).left(20)));
             QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);  // 只重绘, 不收输入
@@ -2377,7 +2401,7 @@ void MainWindow::updateNews() {
     int totalNow = newsTable_ ? newsTable_->rowCount() : 0;
     progress_->setVisible(false);
     btnUpdateNews_->setEnabled(true);
-    status_->setText(QStringLiteral("新闻已更新: 新增 %1 条, 补抓全文 %2 条, 缓存共 %3 条")
+    newsStatus_->setText(QStringLiteral("新闻已更新: 新增 %1 条, 补抓全文 %2 条, 缓存共 %3 条")
         .arg(added).arg(fetchedText).arg(totalNow));
 }
 
@@ -2413,7 +2437,7 @@ void MainWindow::loadNewsView(const QString& category) {
     newsTable_->horizontalHeader()->setStretchLastSection(true);
     newsTable_->setUpdatesEnabled(true);
     if (rows.empty()) return;
-    status_->setText(QStringLiteral("新闻缓存: 共 %1 条 (%2)")
+    newsStatus_->setText(QStringLiteral("新闻缓存: 共 %1 条 (%2)")
         .arg(rows.size()).arg(category.isEmpty() ? QStringLiteral("全部") : category));
 }
 
@@ -2620,5 +2644,5 @@ void MainWindow::openNewsHtmlLocal(const NewsItem& src) {
     f.write(html.toUtf8());
     f.close();
     QDesktopServices::openUrl(QUrl::fromLocalFile(file));
-    if (status_) status_->setText(QStringLiteral("已生成本地副本并用浏览器打开: %1").arg(file));
+    if (newsStatus_) newsStatus_->setText(QStringLiteral("已生成本地副本并用浏览器打开: %1").arg(file));
 }

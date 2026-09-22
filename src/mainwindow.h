@@ -164,6 +164,8 @@ private:
     class QDialog*      settingsDlg_ = nullptr;    // 设置对话框(低频项)
     class QTimer*       newsTimer_ = nullptr;
     QNetworkAccessManager* newsNM_ = nullptr;
+    class QLabel*       newsStatus_ = nullptr;   // 新闻页自己的状态行(不再覆盖全局状态栏)
+    class QSplitter*    splitter_ = nullptr;     // 主分栏(用于记忆左右宽度)
 
     Engine engine_;
     bool engineReady_ = false;
