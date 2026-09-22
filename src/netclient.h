@@ -87,12 +87,19 @@ QVector<Quote> fetchQuotes(const QStringList& codes);
 // 6 位代码 -> 带后缀(与 toTencentCode/fromTencentCode 同规则; 北交所 4/8/920)
 QString codeWithSuffix(const QString& bare6);
 
-// 更新"当日"全市场资金流并落库
+// 更新"当日"全市场资金流并落库 —— 双数据源(一个被限流就换另一个)
+//   ① 新浪 MoneyFlow.ssl_bkzj_ssggzj : num=1000/次 -> 全市场约 6 个请求, 十几秒;
+//      给 现价/涨跌幅/成交额/主力净额/主力净占比 —— 但没有四档明细
+//   ② 东财 push2 api/qt/clist/get   : 每页最多 100 -> 约 60 个请求;
+//      给超大单/大单/中单/小单四档明细, 但**容易被按 IP 限流**(限流时直接空回复,
+//      换 82./1./7. 等镜像一样, 因为封的是 IP)
+//   srcPref: 0=自动(先新浪, 失败再东财)  1=只用新浪  2=只用东财
 //   force=false 时, 若库里已有当天数据直接返回 2(不重复打接口)
 //   返回: 0=失败 1=成功 2=已是最新
-int updateFundFlowToday(const QString& dbPath, bool force,
+//   outInfo: 可选, 返回一句人类可读的结果说明(用了哪个源/抓到多少只/覆盖率)
+int updateFundFlowToday(const QString& dbPath, int srcPref, bool force,
                         const std::function<void(int, int)>& progress,
-                        QString* err, bool verbose = false);
+                        QString* err, QString* outInfo = nullptr, bool verbose = false);
 
 // 读取某日全市场资金流, 按主力净流入降序; date 为空=取库中最新日期
 //   limit > 0 只取前 N 条; outDate 可空, 返回实际使用的日期

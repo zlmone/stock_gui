@@ -1845,6 +1845,7 @@ void MainWindow::filterCfgSave() {
         if (d.v1) st.setValue(k + QStringLiteral("_v1"), filterSpinVal(d.v1));
         if (d.v2) st.setValue(k + QStringLiteral("_v2"), filterSpinVal(d.v2));
     }
+    if (ffSrcCombo_) st.setValue(QStringLiteral("ff_src"), ffSrcCombo_->currentIndex());
     st.endGroup();
 }
 
@@ -1885,6 +1886,11 @@ void MainWindow::filterCfgLoad() {
         if (v1.isValid() && d.v1) filterSpinSet(d.v1, v1.toDouble());
         const QVariant v2 = st.value(k + QStringLiteral("_v2"));
         if (v2.isValid() && d.v2) filterSpinSet(d.v2, v2.toDouble());
+    }
+    if (ffSrcCombo_) {
+        const QVariant s = st.value(QStringLiteral("ff_src"));
+        if (s.isValid() && s.toInt() >= 0 && s.toInt() < ffSrcCombo_->count())
+            ffSrcCombo_->setCurrentIndex(s.toInt());
     }
     st.endGroup();
 }
@@ -2182,29 +2188,38 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
     {
         FundFlowDay ffd = fundFlowOf(QString::fromStdString(resolveDbPath("fundflow.db")),
                                      QString::fromStdString(code));
-        html += "<h3 style='margin:6px 4px'>当日资金流 (东财口径)</h3>";
+        html += "<h3 style='margin:6px 4px'>当日资金流</h3>";
         if (ffd.ok()) {
             QString col = (ffd.mainNet >= 0) ? QStringLiteral("#c62828") : QStringLiteral("#2e7d32");
             QString judge = ffd.mainNet > 0 && ffd.mainPct >= 3.0
                 ? QStringLiteral("主力明显流入 ✓")
                 : (ffd.mainNet > 0 ? QStringLiteral("小幅流入") : QStringLiteral("主力净流出 ✗"));
-            html += QString("<table border='1' cellspacing='0' cellpadding='3' style='margin:2px'>"
-                            "<tr><td>日期</td><td>%1</td><td>主力净流入</td>"
-                            "<td style='color:%2'><b>%3 亿</b></td><td>主力净占比</td><td>%4%</td>"
-                            "<td>涨跌幅</td><td>%5%</td><td>判定</td><td>%6</td></tr>"
-                            "<tr><td>超大单</td><td>%7 亿</td><td>大单</td><td>%8 亿</td>"
-                            "<td>中单</td><td>%9 亿</td><td>小单</td><td>%10 亿</td>"
-                            "<td colspan='2' style='color:#999'>净流入=超大单+大单</td></tr></table>")
-                .arg(QString::fromStdString(ffd.date))
-                .arg(col)
+            // 两行分开拼, 避免 %10/%11 这种多位占位符(容易写错还不易发现)
+            const bool tiers = ffd.hasTiers();
+            const QString srcTxt = tiers ? QStringLiteral("东财") : QStringLiteral("新浪");
+            auto tierTxt = [&](double v) {
+                return tiers ? QString::number(v / 1e8, 'f', 2) : QStringLiteral("-");
+            };
+            const QString row1 = QStringLiteral(
+                "<tr><td>日期</td><td>%1</td><td>主力净流入</td>"
+                "<td style='color:%2'><b>%3 亿</b></td><td>主力净占比</td><td>%4%</td>"
+                "<td>涨跌幅</td><td>%5%</td><td>判定</td><td>%6</td></tr>")
+                .arg(QString::fromStdString(ffd.date), col)
                 .arg(ffd.mainNet / 1e8, 0, 'f', 2)
                 .arg(ffd.mainPct, 0, 'f', 2)
                 .arg(ffd.changePct, 0, 'f', 2)
-                .arg(judge)
-                .arg(ffd.superNet / 1e8, 0, 'f', 2)
-                .arg(ffd.bigNet / 1e8, 0, 'f', 2)
-                .arg(ffd.midNet / 1e8, 0, 'f', 2)
-                .arg(ffd.smallNet / 1e8, 0, 'f', 2);
+                .arg(judge);
+            const QString row2 = QStringLiteral(
+                "<tr><td>超大单</td><td>%1 亿</td><td>大单</td><td>%2 亿</td>"
+                "<td>中单</td><td>%3 亿</td><td>小单</td><td>%4 亿</td>"
+                "<td colspan='2' style='color:#999'>数据源 %5%6</td></tr>")
+                .arg(tierTxt(ffd.superNet), tierTxt(ffd.bigNet),
+                     tierTxt(ffd.midNet),   tierTxt(ffd.smallNet))
+                .arg(srcTxt,
+                     tiers ? QStringLiteral(", 净流入=超大单+大单")
+                           : QStringLiteral("(没有四档明细, 需切到东财源重抓)"));
+            html += QStringLiteral("<table border='1' cellspacing='0' cellpadding='3' style='margin:2px'>")
+                    + row1 + row2 + QStringLiteral("</table>");
         } else {
             html += QString("<p style='margin:4px;color:#999'>本地无数据 —— 菜单 数据 → 更新当日资金流 抓一次"
                             "(全市场约 1 分钟), 之后离线也能看</p>");
@@ -4148,6 +4163,22 @@ void MainWindow::buildFundFlowPage() {
     row2->addStretch();
     v->addLayout(row2);
 
+    // 数据源选择: 东财有四档明细但请求量大(易被限流); 新浪只有主力净额/净占比, 6 个请求就跑完
+    row2->addWidget(new QLabel(QStringLiteral("数据源:")));
+    ffSrcCombo_ = new QComboBox();
+    ffSrcCombo_->addItem(QStringLiteral("自动 (先新浪, 失败再东财)"));
+    ffSrcCombo_->addItem(QStringLiteral("新浪 (快: 约6个请求)"));
+    ffSrcCombo_->addItem(QStringLiteral("东财 (全: 超大单/大单/中单/小单)"));
+    ffSrcCombo_->setToolTip(QStringLiteral("东财: 四档明细齐全, 但要翻 60 页, 连翻几次就会被按 IP 限流(空回复);\n"
+                                          "  (被限流后换镜像域名也没用, 封的是 IP, 等 10-30 分钟)\n"
+                                          "新浪: 一次 1000 只, 全市场约 6 个请求, 只有主力净额/主力净占比(无四档)。\n"
+                                          "自动 = 先新浪, 新浪挂了再试东财。"));
+    connect(ffSrcCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        if (ffInfo_) fillFundFlowTable();   // 只是刷新提示(数据源是抓取时用的)
+    });
+    row2->addWidget(ffSrcCombo_);
+    row2->addSpacing(8);
+
     ffInfo_ = new QLabel(QStringLiteral("尚未加载资金流数据"));
     ffInfo_->setWordWrap(true);
     ffInfo_->setStyleSheet(QStringLiteral("color:#666;"));
@@ -4224,10 +4255,12 @@ void MainWindow::fillFundFlowTable() {
         setN(3, QString::number(f.changePct, 'f', 2), f.changePct);
         setN(4, QString::number(f.mainNet / 1e8, 'f', 2), f.mainNet / 1e8);
         setN(5, QString::number(f.mainPct, 'f', 2), f.mainPct);
-        setN(6, QString::number(f.superNet / 1e8, 'f', 2), f.superNet / 1e8);
-        setN(7, QString::number(f.bigNet / 1e8, 'f', 2), f.bigNet / 1e8);
-        setN(8, QString::number(f.midNet / 1e8, 'f', 2), f.midNet / 1e8);
-        setN(9, QString::number(f.smallNet / 1e8, 'f', 2), f.smallNet / 1e8);
+        // 新浪口径没有四档明细 -> 显示 "-", 别用 0.00 冒充(那是假的)
+        const bool tiers = f.hasTiers();
+        setN(6, tiers ? QString::number(f.superNet / 1e8, 'f', 2) : QStringLiteral("-"), tiers ? f.superNet / 1e8 : 0.0);
+        setN(7, tiers ? QString::number(f.bigNet / 1e8, 'f', 2) : QStringLiteral("-"), tiers ? f.bigNet / 1e8 : 0.0);
+        setN(8, tiers ? QString::number(f.midNet / 1e8, 'f', 2) : QStringLiteral("-"), tiers ? f.midNet / 1e8 : 0.0);
+        setN(9, tiers ? QString::number(f.smallNet / 1e8, 'f', 2) : QStringLiteral("-"), tiers ? f.smallNet / 1e8 : 0.0);
         setS(10, QString::fromStdString(f.date));
         // 资金流方向着色: 红=净流入(和行情一致), 绿=净流出
         QColor c = (f.mainNet >= 0) ? QColor(198, 40, 40) : QColor(46, 125, 50);
@@ -4248,7 +4281,11 @@ void MainWindow::fillFundFlowTable() {
             QString note = bj > 0
                 ? QStringLiteral(" | 含北交所 %1 只(本地K线库不含北交所, 双击看不了详情)").arg(bj)
                 : QString();
-            ffInfo_->setText(QStringLiteral("日期 %1 | 全市场 %2 只 (净流入 %3 / 净流出 %4) | 当前筛选命中 %5 只%6 | 库: fundflow.db")
+            const bool tiers = ffAll_.front().hasTiers();
+            const QString srcTxt = tiers ? QStringLiteral("东财(含四档明细)")
+                                         : QStringLiteral("新浪(只有主力净额/净占比, 四档显示为 -; 日期按本机日期, 周末回退到周五)");
+            ffInfo_->setText(QStringLiteral("数据源 %1 | 日期 %2 | 全市场 %3 只 (净流入 %4 / 净流出 %5) | 当前筛选命中 %6 只%7 | 库: fundflow.db")
+                .arg(srcTxt)
                 .arg(QString::fromStdString(ffAll_.front().date))
                 .arg((int)ffAll_.size()).arg(inflow).arg((int)ffAll_.size() - inflow)
                 .arg((int)rows.size()).arg(note));
@@ -4270,7 +4307,7 @@ void MainWindow::reloadFundFlow() {
 void MainWindow::updateFundFlow() {
     QString dbp = QString::fromStdString(resolveDbPath("fundflow.db"));
     if (QMessageBox::question(this, QStringLiteral("更新当日资金流"),
-            QStringLiteral("抓取东财全市场资金流排行(60 页 x 100 只, 约 20-40 秒)。\n"
+            QStringLiteral("抓取全市场资金流排行(数据源见右侧下拉框)。\n"
                            "口径: 主力净流入 = 超大单 + 大单, 主力净占比 = 净额 / 成交额。\n"
                            "数据存 fundflow.db, 之后离线也能看。\n\n开始?"),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes) return;
@@ -4283,12 +4320,16 @@ void MainWindow::updateFundFlow() {
     progress_->setValue(0);
     status_->setText(QStringLiteral("正在抓取当日资金流..."));
 
-    QString err;
-    int r = updateFundFlowToday(dbp, false, [this](int d, int t) {
+    // 数据源: 0=自动(先新浪, 失败再东财) 1=只用新浪 2=只用东财
+    const int srcPref = ffSrcCombo_ ? ffSrcCombo_->currentIndex() : 0;
+    QString err, info;
+    int r = updateFundFlowToday(dbp, srcPref, false, [this](int d, int t) {
         progress_->setRange(0, t);
         progress_->setValue(d);
-        status_->setText(QStringLiteral("资金流抓取: 第 %1/%2 页 (每页 100 只)...").arg(d).arg(t));
-    }, &err, false);
+        status_->setText(t > 0 && t <= 200
+            ? QStringLiteral("资金流抓取: 第 %1/%2 页...").arg(d).arg(t)
+            : QStringLiteral("资金流抓取: %1 只...").arg(d));
+    }, &err, &info, false);
 
     progress_->setVisible(false);
     btnUpdate_->setEnabled(true);
@@ -4298,19 +4339,19 @@ void MainWindow::updateFundFlow() {
 
     if (r == 0) {
         status_->setText(QStringLiteral("资金流更新失败: %1").arg(err));
+        const QString logPath = QFileInfo(dbp).absolutePath() + QStringLiteral("/fundflow_log.txt");
         QMessageBox::warning(this, QStringLiteral("资金流更新失败"),
-            QStringLiteral("%1\n\n(接口可能临时限流, 过几分钟重试即可; 已有数据不受影响)").arg(err));
+            QStringLiteral("%1\n\n"
+                           "能做的三件事:\n"
+                           "① 把【数据源】切成「新浪」再试 —— 它的请求量只有东财的 1/10, 基本不会被限流;\n"
+                           "② 等 10-30 分钟再试(东财按 IP 限流, 限流期间换镜像域名也没用);\n"
+                           "③ 把日志 %2 发我, 里面有每次请求的失败原因。\n\n"
+                           "已有数据不受影响, 可以继续看/筛选。").arg(err, logPath));
         return;
     }
     reloadFundFlow();
-    if (r == 2) {
-        status_->setText(QStringLiteral("资金流已是最新 (日期: %1)")
-            .arg(ffAll_.empty() ? QStringLiteral("-") : QString::fromStdString(ffAll_.front().date)));
-    } else {
-        status_->setText(QStringLiteral("资金流更新完成 ✓ 日期: %1 | 全市场 %2 只")
-            .arg(ffAll_.empty() ? QStringLiteral("-") : QString::fromStdString(ffAll_.front().date))
-            .arg((int)ffAll_.size()));
-    }
+    status_->setText(r == 2 ? QStringLiteral("资金流已是最新 ✓ %1").arg(info)
+                            : QStringLiteral("资金流更新完成 ✓ %1").arg(info));
 }
 
 void MainWindow::exportFundFlowCsv() {

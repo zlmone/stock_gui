@@ -43,9 +43,11 @@ struct FundFlowDay {
     double mainPct = 0;        // 主力净占比 %
     double superNet = 0;       // 超大单净额(元)
     double bigNet = 0;         // 大单净额(元)
-    double midNet = 0;         // 中单净额(元)
-    double smallNet = 0;       // 小单净额(元)
+    double midNet = 0;         // 中单净额(元)   —— 仅东财口径有; 新浪口径为 0
+    double smallNet = 0;       // 小单净额(元)   —— 同上
+    std::string src;           // 数据源: "em"=东财(含四档明细) / "sina"=新浪(只有主力净额+净占比)
     bool ok() const { return !date.empty(); }
+    bool hasTiers() const { return src != "sina"; }   // 是否有超大/大/中/小四档
 };
 
 // 筹码分布 (三角分布法, 近260日近似)

@@ -252,6 +252,7 @@ private:
     class QDoubleSpinBox* ffMinNet_ = nullptr;      // 主力净流入 >= (亿)
     class QDoubleSpinBox* ffMinPct_ = nullptr;      // 主力净占比 >= (%)
     class QDoubleSpinBox* ffMaxChg_ = nullptr;      // 涨幅 <= (%)
+    class QComboBox*      ffSrcCombo_ = nullptr;    // 资金流数据源: 0=自动 1=新浪 2=东财
     class QCheckBox*      ffPriceOn_ = nullptr;     // 资金流页: 按现价区间过滤(勾选才生效)
     class QDoubleSpinBox* ffPriceLo_ = nullptr;
     class QDoubleSpinBox* ffPriceHi_ = nullptr;
