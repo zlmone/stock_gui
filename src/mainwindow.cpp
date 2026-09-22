@@ -50,6 +50,7 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QTreeWidget>
 #include <algorithm>
 #include <map>
+#include <set>
 #include <QSettings>
 #include <QScreen>
 #include <QGuiApplication>
@@ -1671,7 +1672,27 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
     tabs->addTab(newsPage, QString::fromUtf8("News"));
     {
         QString dbPath = QString::fromStdString(resolveDbPath("news.db"));
-        auto rows = searchNews(dbPath.toStdString(), code, 20);
+        // 说明: 早先这里直接把带后缀的代码(如 "600000.SH")交给 searchNews,
+        // 而 news_items 的标题/摘要里几乎不会出现 ".SH", 所以永远搜不到 ->
+        // 个股详情里的 News 页一直是空白的。
+        // 现在按"裸 6 位代码"与"股票名称"两个关键词分别检索再合并去重 ——
+        // 中文财经新闻通常写公司名而不是代码, 只搜代码命中率很低。
+        const QString bare = QString::fromStdString(code).section(QLatin1Char('.'), 0, 0);
+        std::vector<NewsItem> rows;
+        {
+            std::set<std::string> seen;
+            auto take = [&](const std::vector<NewsItem>& src) {
+                for (const auto& x : src) {
+                    if (!x.link.empty() && !seen.insert(x.link).second) continue;
+                    rows.push_back(x);
+                }
+            };
+            take(searchNews(dbPath.toStdString(), bare.toStdString(), 40));
+            if (!name.empty()) take(searchNews(dbPath.toStdString(), name, 40));
+            std::sort(rows.begin(), rows.end(),
+                      [](const NewsItem& a, const NewsItem& b) { return a.epoch > b.epoch; });
+            if (rows.size() > 20) rows.resize(20);
+        }
         newsTable->setRowCount(0);
         for (auto& it : rows) {
             int r = newsTable->rowCount();
@@ -1698,12 +1719,21 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
             if (newsTable->item(row, 2)) it.category = newsTable->item(row, 2)->text().toStdString();
             showNewsReader(it);   // 个股相关新闻同样走本地阅读器(离线可读)
         });
-        if (rows.empty())
-            status_->setText(QStringLiteral("%1: no related news cached, click [Update] to fetch.")
-                .arg(QString::fromStdString(name)));
-        else
-            status_->setText(QStringLiteral("%1 related news: %2 items.")
-                .arg(QString::fromStdString(name)).arg((int)rows.size()));
+        // 无论有没有结果都在页内说明一句 —— 原先只在全局状态栏写了提示,
+        // 弹窗里看起来就是"整页空白", 根本注意不到。
+        auto* nhint = new QLabel();
+        nhint->setWordWrap(true);
+        nhint->setStyleSheet(QStringLiteral("color:#777;"));
+        if (rows.empty()) {
+            nhint->setText(QStringLiteral("本地新闻缓存里没有与「%1 / %2」相关的新闻; 先到【新闻资讯】页点【⟳ 更新新闻】抓一次(需联网), 之后这里会自动匹配。")
+                           .arg(QString::fromStdString(name), bare));
+        } else {
+            nhint->setText(QStringLiteral("按「%1 / %2」匹配到 %3 条; 双击可用本地阅读器打开(离线可读)。")
+                           .arg(QString::fromStdString(name), bare).arg((int)rows.size()));
+        }
+        nlay->addWidget(nhint);
+        status_->setText(QStringLiteral("%1: 相关新闻 %2 条")
+            .arg(QString::fromStdString(name)).arg((int)rows.size()));
     }
     lay->addWidget(tabs);
     dlg.resize(900, 700);
