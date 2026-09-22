@@ -60,6 +60,11 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QFileInfo>
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexerlua.h>
+#include <QMenuBar>
+#include <QMenu>
+#include <QAction>
+#include <QKeySequence>
+#include <QToolButton>
 
 // 带数值的表格项: 点表头排序时按数值比较(而非字符串), 如 "+20.3%" vs "-2.4%"
 class NumericItem : public QTableWidgetItem {
@@ -112,6 +117,47 @@ static std::string readStrategyFile(const std::string& path) {
 }
 
 // ===== 代码工作室: 简易 Lua 语法高亮器 (单块遍历, 避免注释内再高亮字符串) =====
+// 可折叠分组: 点标题行的箭头展开/收起内容。
+// (Qt 自带的 checkable QGroupBox 只是"禁用"里面的子控件, 并不会收起来, 所以自写一个)
+class CollapsibleBox : public QWidget {
+public:
+    explicit CollapsibleBox(const QString& title, bool expanded = true, QWidget* parent = nullptr)
+        : QWidget(parent) {
+        auto* v = new QVBoxLayout(this);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(2);
+
+        head_ = new QToolButton(this);
+        head_->setText(title);
+        head_->setCheckable(true);
+        head_->setChecked(expanded);
+        head_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        head_->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        head_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        head_->setCursor(Qt::PointingHandCursor);
+        head_->setStyleSheet(QStringLiteral(
+            "QToolButton{border:none;font-weight:bold;padding:4px 2px;text-align:left;}"));
+        v->addWidget(head_);
+
+        body_ = new QWidget(this);
+        contentLay_ = new QVBoxLayout(body_);
+        contentLay_->setContentsMargins(12, 2, 2, 6);
+        v->addWidget(body_);
+        body_->setVisible(expanded);
+
+        connect(head_, &QToolButton::toggled, this, [this](bool on) {
+            body_->setVisible(on);
+            head_->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+        });
+    }
+    QVBoxLayout* content() const { return contentLay_; }
+
+private:
+    QToolButton* head_ = nullptr;
+    QWidget* body_ = nullptr;
+    QVBoxLayout* contentLay_ = nullptr;
+};
+
 class LuaHighlighter : public QSyntaxHighlighter {
 public:
     explicit LuaHighlighter(QTextEdit* parent) : QSyntaxHighlighter(parent) {
@@ -229,21 +275,108 @@ void MainWindow::closeEvent(QCloseEvent* e) {
 
 // ==================== UI 构建 ====================
 void MainWindow::buildUI() {
+    // ---- 菜单栏: 把命令从左侧栏解放出来, 并统一快捷键 ----
+    //   标签页 Ctrl+1..5; 主操作 F5/F6/F7
+    {
+        auto* mData = menuBar()->addMenu(QStringLiteral("数据(&D)"));
+        auto* aUpd = mData->addAction(QStringLiteral("更新数据 (快速, 约15秒)"));
+        aUpd->setShortcut(QKeySequence(QStringLiteral("Ctrl+U")));
+        connect(aUpd, &QAction::triggered, this, &MainWindow::updateData);
+        auto* aNews = mData->addAction(QStringLiteral("更新新闻"));
+        aNews->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
+        connect(aNews, &QAction::triggered, this, &MainWindow::updateNews);
+        mData->addSeparator();
+        auto* aQuit = mData->addAction(QStringLiteral("退出"));
+        aQuit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
+        connect(aQuit, &QAction::triggered, this, &QWidget::close);
+
+        auto* mRun = menuBar()->addMenu(QStringLiteral("运行(&R)"));
+        auto* aChk = mRun->addAction(QStringLiteral("开始体检 (输入的代码)"));
+        aChk->setShortcut(QKeySequence(QStringLiteral("F5")));
+        connect(aChk, &QAction::triggered, this, &MainWindow::runCheckup);
+        auto* aScan = mRun->addAction(QStringLiteral("全市场扫描 + 筛选"));
+        aScan->setShortcut(QKeySequence(QStringLiteral("F6")));
+        connect(aScan, &QAction::triggered, this, &MainWindow::runScanAll);
+        auto* aForm = mRun->addAction(QStringLiteral("形态筛选 (全市场选股)"));
+        aForm->setShortcut(QKeySequence(QStringLiteral("F7")));
+        connect(aForm, &QAction::triggered, this, &MainWindow::runFormScan);
+        mRun->addSeparator();
+        auto* aSector = mRun->addAction(QStringLiteral("板块聚合统计 (当前结果)"));
+        connect(aSector, &QAction::triggered, this, &MainWindow::showSectorStats);
+
+        auto* mView = menuBar()->addMenu(QStringLiteral("视图(&V)"));
+        const QString tabNames[5] = { QStringLiteral("四维体检"), QStringLiteral("策略回测"),
+                                      QStringLiteral("形态筛选"), QStringLiteral("新闻资讯"),
+                                      QStringLiteral("策略代码") };
+        for (int i = 0; i < 5; ++i) {
+            auto* a = mView->addAction(tabNames[i]);
+            a->setShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(i + 1)));
+            connect(a, &QAction::triggered, this, [this, i]() {
+                if (rightTabs_ && i < rightTabs_->count()) rightTabs_->setCurrentIndex(i);
+            });
+        }
+
+        auto* mHelp = menuBar()->addMenu(QStringLiteral("帮助(&H)"));
+        auto* aAbout = mHelp->addAction(QStringLiteral("关于"));
+        connect(aAbout, &QAction::triggered, this, [this]() {
+            QMessageBox::about(this, QStringLiteral("关于 — 股票四维"),
+                QStringLiteral("<b>股票四维</b><br>本地数据库 + 网络数据的股票分析桌面工具<br><br>"
+                               "四维 = 行为(修复率/回测) + 位置(均线/区间) + 估值(PB分位) + 归类(行业/概念)"));
+        });
+    }
+
     auto* central = new QWidget(this);
     auto* mainLay = new QHBoxLayout(central);
     mainLay->setContentsMargins(6, 6, 6, 6);
 
-    // ---- 左侧策略面板（放 ScrollArea 防溢出）----
+    // ---- 左侧: 顶部固定的主操作条 + 下方可滚动参数区 ----
+    //   主操作常驻顶部, 不再随参数一起滚走(原先要滚到底才能点到"开始体检")
+    auto* leftBox = new QWidget();
+    auto* leftLay = new QVBoxLayout(leftBox);
+    leftLay->setContentsMargins(0, 0, 0, 0);
+    leftLay->setSpacing(6);
+    {
+        auto* bar = new QWidget();
+        auto* bl = new QHBoxLayout(bar);
+        bl->setContentsMargins(4, 4, 4, 0);
+        bl->setSpacing(6);
+
+        btnUpdate_ = new QPushButton(QStringLiteral("⟳ 更新数据"));
+        btnUpdate_->setMinimumHeight(30);
+        btnUpdate_->setToolTip(QStringLiteral("批量快照补全市场最新一日(温柔模式, 约 15 秒); 如有历史缺口会询问全量重建"));
+        connect(btnUpdate_, &QPushButton::clicked, this, &MainWindow::updateData);
+
+        btnRun_ = new QPushButton(QStringLiteral("开始体检"));
+        btnRun_->setMinimumHeight(30);
+        btnRun_->setToolTip(QStringLiteral("对【股票代码】里的股票做四维体检 (F5)"));
+        connect(btnRun_, &QPushButton::clicked, this, &MainWindow::runCheckup);
+
+        btnScan_ = new QPushButton(QStringLiteral("全市场扫描"));
+        btnScan_->setMinimumHeight(30);
+        {
+            QFont bf = btnScan_->font(); bf.setBold(true);
+            btnScan_->setFont(bf);
+        }
+        btnScan_->setToolTip(QStringLiteral("扫描全市场, 并按【四维体检】页顶部的筛选条件选出候选 (F6)"));
+        connect(btnScan_, &QPushButton::clicked, this, &MainWindow::runScanAll);
+
+        bl->addWidget(btnUpdate_);
+        bl->addWidget(btnRun_);
+        bl->addWidget(btnScan_, 1);
+        leftLay->addWidget(bar);
+    }
+
     auto* side = new QWidget();
     auto* sv = new QVBoxLayout(side);
     sv->setContentsMargins(4, 4, 4, 4);
-    buildSidePanel(sv);
+    buildSidePanel(sv);          // 参数区(可滚动)
     sv->addStretch();
 
     auto* scroll = new QScrollArea();
     scroll->setWidget(side);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    leftLay->addWidget(scroll, 1);
 
     // ---- 右侧结果区 ----
     auto* right = new QWidget();
@@ -272,7 +405,15 @@ void MainWindow::buildUI() {
     table_->setAlternatingRowColors(true);
     table_->verticalHeader()->setVisible(false);
     connect(table_, &QTableWidget::cellDoubleClicked, this, &MainWindow::showStockDetail);
-    rightTabs_->addTab(table_, QStringLiteral("四维体检"));
+    {
+        // 筛选条件与结果放在同一页(它本来就是筛结果的), 并默认收起以免挤占表格
+        auto* checkPage = new QWidget();
+        auto* cpl = new QVBoxLayout(checkPage);
+        cpl->setContentsMargins(0, 0, 0, 0);
+        if (filterBox_) cpl->addWidget(filterBox_);
+        cpl->addWidget(table_, 1);
+        rightTabs_->addTab(checkPage, QStringLiteral("四维体检"));
+    }
 
     // 回测结果表
     btTable_ = new QTableWidget();
@@ -431,7 +572,7 @@ void MainWindow::buildUI() {
 
     // ---- 分栏 ----
     auto* splitter = new QSplitter(Qt::Horizontal);
-    splitter->addWidget(scroll);
+    splitter->addWidget(leftBox);
     splitter->addWidget(right);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({350, 930});
@@ -441,12 +582,7 @@ void MainWindow::buildUI() {
 }
 
 void MainWindow::buildSidePanel(QVBoxLayout* sv) {
-    // ---------- 数据更新 ----------
-    btnUpdate_ = new QPushButton(QStringLiteral("⟳ 更新数据 (快速, 约15秒)"));
-    btnUpdate_->setMinimumHeight(32);
-    btnUpdate_->setToolTip(QStringLiteral("批量快照补全市场最新一日(温柔模式); 如有历史缺口会询问全量重建"));
-    connect(btnUpdate_, &QPushButton::clicked, this, &MainWindow::updateData);
-    sv->addWidget(btnUpdate_);
+    // (更新数据 / 开始体检 / 全市场扫描 三个主操作已移到左侧顶部固定操作条)
 
     // ---------- 股票代码 ----------
     auto* gbCode = new QGroupBox(QStringLiteral("股票代码 (逗号/空格分隔)"));
@@ -482,8 +618,10 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     sv->addWidget(gbParam);
 
     // ---------- 筛选条件 ----------
-    auto* gbF = new QGroupBox(QStringLiteral("筛选条件 (勾选后生效)"));
-    auto* grid = new QGridLayout(gbF);
+    auto* gbF = new CollapsibleBox(QStringLiteral("筛选条件"), false /*默认收起*/);
+    gbF->setToolTip(QStringLiteral("勾选后即时生效, 只影响结果视图, 不用重新扫描"));
+    auto* grid = new QGridLayout();
+    gbF->content()->addLayout(grid);
     int r = 0;
 
     fFixRateOn_ = new QCheckBox(QStringLiteral("修复率 ≥"));
@@ -552,7 +690,8 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     fChipConc90Val_->setToolTip(QStringLiteral("90%筹码集中度 = 全部筹码成本区间宽度, 覆盖更全"));
     grid->addWidget(fChipConc90On_, r, 0); grid->addWidget(fChipConc90Val_, r, 1); r++;
 
-    sv->addWidget(gbF);
+    // 筛选条件不留在左侧栏, 而是挂到"四维体检"页顶部(与结果放在一起, 见 buildUI)
+    filterBox_ = gbF;
 
     // ---------- 预设策略 ----------
     auto* gbPre = new QGroupBox(QStringLiteral("预设策略 (一键配置)"));
@@ -696,24 +835,7 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     fundFlowOn_->setToolTip(QStringLiteral("关闭后完全离线工作; 离线环境下程序也会自动跳过"));
     sv->addWidget(fundFlowOn_);
 
-    btnRun_ = new QPushButton(QStringLiteral("开始体检 (输入的代码)"));
-    btnRun_->setMinimumHeight(34);
-    connect(btnRun_, &QPushButton::clicked, this, &MainWindow::runCheckup);
-    sv->addWidget(btnRun_);
-
-    btnScan_ = new QPushButton(QStringLiteral("全市场扫描 + 筛选"));
-    btnScan_->setMinimumHeight(42);
-    {
-        QFont bf = btnScan_->font(); bf.setBold(true); bf.setPointSize(bf.pointSize() + 1);
-        btnScan_->setFont(bf);
-    }
-    connect(btnScan_, &QPushButton::clicked, this, &MainWindow::runScanAll);
-    sv->addWidget(btnScan_);
-
-    auto* btnSector = new QPushButton(QStringLiteral("板块聚合统计 (当前结果)"));
-    btnSector->setToolTip(QStringLiteral("统计当前表格里的股票集中在哪些行业/概念"));
-    connect(btnSector, &QPushButton::clicked, this, &MainWindow::showSectorStats);
-    sv->addWidget(btnSector);
+    // (三个按钮已移到顶部操作条 / 菜单; "板块聚合统计" 见菜单 运行)
 
     // 筛选条件变化 -> 扫描视图即时刷新 (无需重新扫描)
     for (auto* b : {fFixRateOn_, fSamplesOn_, fBacktestOn_, fWorstOn_, fZtOn_, fPosOn_, fMa20On_, fPbOn_,

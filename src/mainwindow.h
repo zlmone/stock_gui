@@ -157,6 +157,7 @@ private:
     class QComboBox*    newsInterval_ = nullptr;
     class QComboBox*    newsOpenMode_ = nullptr;  // 双击打开方式: 程序内 / 本地浏览器 / 网上浏览
     class QGroupBox*    codeStudioBox_ = nullptr;  // 策略代码工作室(作为右侧独立标签页, 便于最大化编辑)
+    class QWidget*      filterBox_ = nullptr;      // 筛选条件(可折叠), 稍后挂到"四维体检"页顶部
     class QTimer*       newsTimer_ = nullptr;
     QNetworkAccessManager* newsNM_ = nullptr;
 
