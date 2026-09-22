@@ -1497,8 +1497,32 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
     std::string name = engine_.stockName(code);
     Stats st = engine_.analyze(code, name, 0, currentParams());
     if (!st.ok && st.verdict == "数据不足") {
-        QMessageBox::information(this, QStringLiteral("提示"),
-            QStringLiteral("该股票数据不足, 无法生成详情"));
+        // 原先只说"数据不足", 既不告诉你差多少, 也不给出路。
+        // 真正常见的原因: 库是新建的, 只跑过"快速更新"(每天只补一天), 从没做过全量重建,
+        // 于是每只股票的K线都攒不够 60 根 —— 这种情况老代码里连"缺口询问"都不会触发。
+        // 所以这里直接给出路: 问一句, 就地全量重建, 重建完自动重试本次详情。
+        const int have = (int)engine_.loadSeries(code, 610).size();
+        auto ret = QMessageBox::question(this, QStringLiteral("K线数据不足"),
+            QStringLiteral("这只股票(%1)的本地K线只有 %2 根, 生成详情至少需要 60 根。\n\n"
+                           "原因: 数据库没做过全量重建 —— 快速更新每天只补最新一天, "
+                           "新建的库要攒够 60 个交易日才够。\n\n"
+                           "现在做一次全量重建补齐历史吗? (逐只拉 260 根, 约 10-20 分钟)")
+                .arg(QString::fromStdString(name)).arg(have),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (ret != QMessageBox::Yes) return;
+        if (!runFullRebuild()) return;
+        st = engine_.analyze(code, name, 0, currentParams());
+        if (!st.ok) {
+            QMessageBox::information(this, QStringLiteral("仍然无法生成详情"),
+                QStringLiteral("全量重建已完成, 但仍无法生成详情: %1\n"
+                               "(可能是该股票已退市/长期停牌, 或行情接口没有返回它的历史数据)")
+                    .arg(QString::fromStdString(st.verdict)));
+            return;
+        }
+    }
+    if (!st.ok) {
+        QMessageBox::information(this, QStringLiteral("无法生成详情"),
+            QStringLiteral("该股票无法生成详情: %1").arg(QString::fromStdString(st.verdict)));
         return;
     }
     auto bars = engine_.loadSeries(code, 600);
@@ -1850,6 +1874,43 @@ void MainWindow::showSectorStats() {
     dlg.exec();
 }
 
+// 全量重建(慢速安全模式): 逐只拉 260 根历史, 同时补齐"历史深度"和"中间缺口"。
+// 抽成独立函数, 这样在别处(例: 个股详情提示K线不足)也能就地补齐, 不必绕回菜单。
+bool MainWindow::runFullRebuild() {
+    QString dbp = QString::fromStdString(resolveDbPath("kline_latest.db"));
+    btnUpdate_->setEnabled(false);
+    btnRun_->setEnabled(false); btnScan_->setEnabled(false);
+    btnBt1_->setEnabled(false); btnBt2_->setEnabled(false); btnBt3_->setEnabled(false);
+    progress_->setVisible(true);
+    progress_->setRange(0, 100); progress_->setValue(0);
+    status_->setText(QStringLiteral("全量重建中(慢速安全模式)..."));
+    engine_.close();                 // 释放数据库句柄(Windows 文件锁)
+    engineReady_ = false;
+    QString err2;
+    bool ok2 = updateMarketData(dbp, 0,
+        [this](int d, int t) {
+            progress_->setRange(0, t);
+            progress_->setValue(d);
+            status_->setText(QStringLiteral("全量重建中: %1/%2 (慢速安全模式, 可稍等)").arg(d).arg(t));
+        }, &err2, false);
+    std::string e3;
+    engineReady_ = engine_.open(e3);
+    progress_->setVisible(false);
+    btnUpdate_->setEnabled(true);
+    btnRun_->setEnabled(true); btnScan_->setEnabled(true);
+    onStrategyChanged();
+    if (!ok2) {
+        status_->setText(QStringLiteral("全量重建失败: %1 (原数据未受影响)").arg(err2));
+        QMessageBox::warning(this, QStringLiteral("全量重建失败"),
+            QStringLiteral("全量重建失败:\n%1\n\n原数据库未被修改, 可继续使用。\n"
+                           "(行情接口可能临时限流, 过 15-30 分钟重试即可)").arg(err2));
+        return false;
+    }
+    status_->setText(QStringLiteral("全量重建完成 ✓ 最新交易日: %1 | 请重新体检/扫描")
+        .arg(QString::fromStdString(engine_.latestMarketDate())));
+    return true;
+}
+
 // ==================== 数据更新（两级模式）====================
 // 快速更新: 批量快照(14个请求)补全市场最新一日 —— 秒级, 温柔请求量
 // 缺口询问: 若中间有多日缺口 -> 询问是否全量重建(慢速安全模式)
@@ -1959,25 +2020,7 @@ void MainWindow::updateData() {
                 .arg(prevMax, afterMax).arg(spanDays),
             QMessageBox::Yes | QMessageBox::No);
         if (ret == QMessageBox::Yes) {
-            progress_->setRange(0, 100); progress_->setValue(0);
-            status_->setText(QStringLiteral("全量重建中(慢速安全模式)..."));
-            engine_.close(); engineReady_ = false;
-            QString err2;
-            bool ok2 = updateMarketData(dbp, 0,
-                [this](int d, int t) {
-                    progress_->setRange(0, t);
-                    progress_->setValue(d);
-                    status_->setText(QStringLiteral("全量重建中: %1/%2 (慢速安全模式, 可稍等)").arg(d).arg(t));
-                }, &err2, false);
-            std::string e3;
-            engineReady_ = engine_.open(e3);
-            if (!ok2) {
-                status_->setText(QStringLiteral("全量重建失败: %1 (原数据未受影响)").arg(err2));
-                QMessageBox::warning(this, QStringLiteral("全量重建失败"), err2);
-            } else {
-                status_->setText(QStringLiteral("全量重建完成 ✓ 最新交易日: %1 | 请重新体检/扫描")
-                    .arg(QString::fromStdString(engine_.latestMarketDate())));
-            }
+            runFullRebuild();
         } else {
             status_->setText(QStringLiteral("更新完成(快速模式) ✓ 最新: %1 | 中间缺口未补齐").arg(afterMax));
         }

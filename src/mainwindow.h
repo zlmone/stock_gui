@@ -76,6 +76,7 @@ private slots:
     void showStockDetailByCode(const std::string& code);  // 详情弹窗核心(按代码)
     void showSectorStats();                   // 板块聚合统计(当前结果)
     void updateData();                // 联网更新全市场数据
+    bool runFullRebuild();            // 全量重建(逐只260根历史): 补深度+补缺口, 供多处复用
     void showTradeDetail(int row, int col);
 
     // --- 新闻采集 ---
