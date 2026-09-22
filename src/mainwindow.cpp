@@ -62,6 +62,7 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <Qsci/qsciscintilla.h>
 #include <Qsci/qscilexerlua.h>
 #include <QFileDialog>
+#include "pool.h"
 #include <QTextStream>
 #include <QMenuBar>
 #include <QMenu>
@@ -876,6 +877,14 @@ void MainWindow::buildUI() {
     buildFundFlowPage();
     reloadFundFlow();          // 启动即显示上次抓的数据(离线可看)
 
+    // 所有结果表统一右键菜单: 加入/移出默认池、看详情、加进盯盘
+    attachTableContextMenu(table_,     QStringLiteral("【四维体检】结果表"));
+    attachTableContextMenu(scanTable_, QStringLiteral("【形态筛选】结果表"));
+    attachTableContextMenu(btTable_,   QStringLiteral("【策略】回测结果表"));
+    attachTableContextMenu(ffTable_,   QStringLiteral("【资金流】结果表"));
+    attachTableContextMenu(watchTable_, QStringLiteral("【实时盯盘】表"));
+    updatePoolButton();
+
     // (策略代码工作室已并入上面的「策略」页, 与回测结果上下分栏)
     rv->addWidget(rightTabs_, 1);
 
@@ -905,6 +914,7 @@ void MainWindow::buildUI() {
         if (tab >= 0 && tab < rightTabs_->count()) rightTabs_->setCurrentIndex(tab);
         const QString codes = st.value(QStringLiteral("ui/codes")).toString();
         if (!codes.isEmpty() && codeEdit_) codeEdit_->setText(codes);
+        else loadPool();          // 第一次跑(或上次是空的): 直接把默认池带出来
     }
 
     setCentralWidget(central);
@@ -920,9 +930,24 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     codeEdit_ = new QLineEdit();
     codeEdit_->setPlaceholderText(QStringLiteral("002385.SZ, 600519, 002730"));
     gl->addWidget(codeEdit_);
-    auto* btnPool = new QPushButton(QStringLiteral("加载默认池 (19只)"));
-    connect(btnPool, &QPushButton::clicked, this, &MainWindow::loadPool);
-    gl->addWidget(btnPool);
+    // 默认池: 内容存在 pool.db(见 pool.h), 不再是写死在代码里的 19 只
+    {
+        auto* poolRow = new QHBoxLayout();
+        poolRow->setSpacing(4);
+        btnPool_ = new QPushButton(QStringLiteral("加载默认池"));
+        btnPool_->setToolTip(QStringLiteral("把 pool.db 里的默认池填进上面的框; 池里可以随时增删(结果表右键 / 池管理)"));
+        connect(btnPool_, &QPushButton::clicked, this, &MainWindow::loadPool);
+        poolRow->addWidget(btnPool_, 1);
+        auto* btnPoolSave = new QPushButton(QStringLiteral("存为默认池"));
+        btnPoolSave->setToolTip(QStringLiteral("把上面框里的代码【覆盖式】存进 pool.db —— 下次开机点【加载默认池】就是这一批"));
+        connect(btnPoolSave, &QPushButton::clicked, this, &MainWindow::saveCodeBoxToPool);
+        poolRow->addWidget(btnPoolSave);
+        auto* btnPoolMgr = new QPushButton(QStringLiteral("池管理…"));
+        btnPoolMgr->setToolTip(QStringLiteral("查看/删除/导入导出默认池"));
+        connect(btnPoolMgr, &QPushButton::clicked, this, &MainWindow::showPoolManager);
+        poolRow->addWidget(btnPoolMgr);
+        gl->addLayout(poolRow);
+    }
     sv->addWidget(gbCode);
 
     // ---------- 策略参数 ----------
@@ -1251,7 +1276,17 @@ void MainWindow::applyPreset(int id) {
 void MainWindow::runCheckup() {
     if (!engineReady_) { QMessageBox::warning(this, QStringLiteral("错误"), QStringLiteral("数据库未连接")); return; }
     QString text = codeEdit_->text().trimmed();
-    if (text.isEmpty()) { QMessageBox::information(this, QStringLiteral("提示"), QStringLiteral("请输入股票代码")); return; }
+    if (text.isEmpty()) {
+        loadPool();                       // 空框自动带出默认池(原先只会弹一句"请输入股票代码")
+        text = codeEdit_->text().trimmed();
+        if (text.isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("提示"),
+                QStringLiteral("股票代码框是空的, 默认池也是空的。\n\n"
+                               "三种填法: ① 手动输入代码; ② 在【形态筛选】/【资金流】等结果表里右键 →【加入默认池】; "
+                               "③ 左侧【池管理…】里粘贴一批代码。"));
+            return;
+        }
+    }
 
     QStringList codes = text.split(QRegularExpression(QStringLiteral("[,\\s，]+")), Qt::SkipEmptyParts);
     AnalyzeParams params = currentParams();
@@ -1280,11 +1315,294 @@ void MainWindow::runCheckup() {
         .arg(params.holdDays));
 }
 
+// 默认池: 从 pool.db 读(第一次运行时把老的写死列表作为种子写进去, 之后一切以库为准)
 void MainWindow::loadPool() {
-    codeEdit_->setText(QStringLiteral(
-        "002730.SZ,603106.SH,003013.SZ,603867.SH,002515.SZ,000006.SZ,000572.SZ,002498.SZ,"
-        "603005.SH,000158.SZ,603881.SH,600570.SH,300458.SZ,601138.SH,600330.SH,002333.SZ,"
-        "601999.SH,002385.SZ,000713.SZ"));
+    const QString dbp = poolDbPath();
+    if (poolCount(dbp) == 0) {
+        std::vector<std::pair<QString, QString>> seed;
+        for (const QString& c : poolSeedCodes()) {
+            std::string nm;
+            if (engineReady_) nm = engine_.stockName(c.toStdString());
+            seed.push_back({ c, QString::fromStdString(nm) });
+        }
+        QString err;
+        int n = poolAdd(dbp, seed, QStringLiteral("内置种子(首次)"), &err);
+        if (n < 0) {
+            status_->setText(QStringLiteral("默认池初始化失败: %1").arg(err));
+            return;
+        }
+        if (n > 0) status_->setText(QStringLiteral("首次运行: 已把内置 %1 只写成默认池 (存在 pool.db)").arg(n));
+    }
+    const auto items = poolLoad(dbp);
+    QStringList codes;
+    for (const PoolItem& it : items) codes << it.code;
+    updatePoolButton();
+    if (!codeEdit_) return;
+    if (codes.isEmpty()) {
+        codeEdit_->clear();
+        status_->setText(QStringLiteral("默认池是空的 —— 在结果表里右键「加入默认池」, 或读入代码后点【存为默认池】"));
+        return;
+    }
+    codeEdit_->setText(codes.join(QStringLiteral(",")));
+    status_->setText(QStringLiteral("已加载默认池 %1 只 (pool.db); 右键结果表可继续加").arg(codes.size()));
+}
+
+void MainWindow::updatePoolButton() {
+    if (!btnPool_) return;
+    const int n = poolCount(poolDbPath());
+    btnPool_->setText(n >= 0 ? QStringLiteral("加载默认池 (%1只)").arg(n)
+                             : QStringLiteral("加载默认池"));
+}
+
+// 追加式加入(结果表右键 / 个股详情按钮走这里)
+int MainWindow::addCodesToPool(const QStringList& codes, const QString& source) {
+    if (codes.isEmpty()) return 0;
+    std::vector<std::pair<QString, QString>> items;
+    for (const QString& raw : codes) {
+        const QString c = poolNormalize(raw);
+        if (c.isEmpty()) continue;
+        std::string nm;
+        if (engineReady_) nm = engine_.stockName(c.toStdString());
+        items.push_back({ c, QString::fromStdString(nm) });
+    }
+    QString err;
+    const int added = poolAdd(poolDbPath(), items, source, &err);
+    updatePoolButton();
+    reloadPoolTable();
+    if (added < 0) {
+        status_->setText(QStringLiteral("加入默认池失败: %1").arg(err));
+        QMessageBox::warning(this, QStringLiteral("加入默认池失败"), err);
+        return 0;
+    }
+    status_->setText(added > 0
+        ? QStringLiteral("已加入默认池 %1 只 (来自%2); 池内共 %3 只").arg(added).arg(source).arg(poolCount(poolDbPath()))
+        : QStringLiteral("这 %1 只在默认池里已经有了 (池内共 %2 只)").arg(items.size()).arg(poolCount(poolDbPath())));
+    return added;
+}
+
+void MainWindow::removeCodesFromPool(const QStringList& codes) {
+    if (codes.isEmpty()) return;
+    QString err;
+    const int n = poolRemove(poolDbPath(), codes, &err);
+    updatePoolButton();
+    reloadPoolTable();
+    status_->setText(n < 0 ? QStringLiteral("移出默认池失败: %1").arg(err)
+                           : QStringLiteral("已从默认池移除 %1 只 (池内剩 %2 只)")
+                                 .arg(n).arg(poolCount(poolDbPath())));
+}
+
+// 覆盖式: 把代码框里当前这批存成新的默认池
+void MainWindow::saveCodeBoxToPool() {
+    if (!codeEdit_) return;
+    const QStringList codes = poolNormalizeList(codeEdit_->text());
+    if (codes.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("存为默认池"),
+            QStringLiteral("上面的【股票代码】框是空的, 没有可存的内容。"));
+        return;
+    }
+    const int old = poolCount(poolDbPath());
+    if (QMessageBox::question(this, QStringLiteral("存为默认池"),
+            QStringLiteral("把当前 %1 只代码覆盖式存为默认池? (池里原来的 %2 只会被替换掉)")
+                .arg(codes.size()).arg(old < 0 ? 0 : old),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes) return;
+
+    QString err;
+    if (poolClear(poolDbPath(), &err) < 0) {
+        QMessageBox::warning(this, QStringLiteral("存为默认池失败"), err);
+        return;
+    }
+    std::vector<std::pair<QString, QString>> items;
+    for (const QString& c : codes) {
+        std::string nm;
+        if (engineReady_) nm = engine_.stockName(c.toStdString());
+        items.push_back({ c, QString::fromStdString(nm) });
+    }
+    const int n = poolAdd(poolDbPath(), items, QStringLiteral("代码框"), &err);
+    updatePoolButton();
+    reloadPoolTable();
+    status_->setText(n < 0 ? QStringLiteral("存为默认池失败: %1").arg(err)
+                           : QStringLiteral("默认池已更新为 %1 只 (pool.db)").arg(codes.size()));
+}
+
+// 选中行(没有选中就用当前行)的代码; 统一成引擎认识的带后缀形式
+QStringList MainWindow::tableSelectedCodes(QTableWidget* t) const {
+    QStringList out;
+    if (!t || !t->model()) return out;
+    QModelIndexList idx;
+    if (t->selectionModel()) idx = t->selectionModel()->selectedRows(0);
+    if (idx.isEmpty()) {
+        const int r = t->currentRow();
+        if (r >= 0) idx << t->model()->index(r, 0);
+    }
+    for (const QModelIndex& i : idx) {
+        const QString c = poolNormalize(i.data(Qt::DisplayRole).toString());
+        if (!c.isEmpty() && !out.contains(c)) out << c;
+    }
+    return out;
+}
+
+// 结果表统一的右键菜单: 加池/移池/看详情/进盯盘 —— 表格之间行为一致, 不用记哪张表支持什么
+void MainWindow::attachTableContextMenu(QTableWidget* t, const QString& what) {
+    if (!t) return;
+    t->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(t, &QTableWidget::customContextMenuRequested, this, [this, t, what](const QPoint& pos) {
+        QTableWidgetItem* hit = t->itemAt(pos);
+        const int row = hit ? hit->row() : t->currentRow();
+        if (row < 0 || row >= t->rowCount()) return;
+        QTableWidgetItem* it0 = t->item(row, 0);
+        if (!it0) return;
+        const QString clicked = poolNormalize(it0->text());
+        if (clicked.isEmpty()) return;
+        // 右键落在未选中的行上 -> 先把选中切到这一行(和常见软件一致)
+        if (t->selectionModel() && !t->selectionModel()->isRowSelected(row, QModelIndex())) t->selectRow(row);
+        QStringList codes = tableSelectedCodes(t);
+        if (codes.isEmpty()) codes << clicked;
+
+        QMenu m(this);
+        QAction* aAdd    = m.addAction(QStringLiteral("加入默认池 (%1 只)").arg(codes.size()));
+        QAction* aDel    = m.addAction(QStringLiteral("从默认池移除"));
+        m.addSeparator();
+        QAction* aDetail = m.addAction(QStringLiteral("查看详情"));
+        QAction* aWatch  = m.addAction(QStringLiteral("加入实时盯盘"));
+        QAction* picked  = m.exec(t->viewport()->mapToGlobal(pos));
+        if (picked == aAdd)        addCodesToPool(codes, what);
+        else if (picked == aDel)   removeCodesFromPool(codes);
+        else if (picked == aDetail) showStockDetailByCode(clicked.toStdString());
+        else if (picked == aWatch)  watchImportFromResultTable(t, what);
+    });
+}
+
+void MainWindow::reloadPoolTable() {
+    if (!poolTable_) return;
+    const auto items = poolLoad(poolDbPath());
+    poolTable_->setSortingEnabled(false);
+    poolTable_->setRowCount((int)items.size());
+    for (int r = 0; r < (int)items.size(); r++) {
+        const PoolItem& it = items[r];
+        poolTable_->setItem(r, 0, new QTableWidgetItem(it.code));
+        poolTable_->setItem(r, 1, new QTableWidgetItem(it.name));
+        poolTable_->setItem(r, 2, new QTableWidgetItem(it.source));
+        poolTable_->setItem(r, 3, new QTableWidgetItem(it.addedAt));
+    }
+    poolTable_->setSortingEnabled(true);
+    if (poolInfo_) {
+        poolInfo_->setText(QStringLiteral("共 %1 只 | 文件: %2\n"
+                                          "(换新版解压到新目录时 pool.db 不会自动跟过来: 把它的路径设进环境变量 STOCK_DB_DIR, "
+                                          "或用下面的【导出】→【粘贴导入】搬一次)")
+            .arg((int)items.size()).arg(poolDbPath()));
+    }
+    updatePoolButton();
+}
+
+void MainWindow::showPoolManager() {
+    if (!poolDlg_) {
+        poolDlg_ = new QDialog(this);
+        poolDlg_->setWindowTitle(QStringLiteral("默认池管理"));
+        auto* v = new QVBoxLayout(poolDlg_);
+        poolInfo_ = new QLabel();
+        poolInfo_->setWordWrap(true);
+        poolInfo_->setStyleSheet(QStringLiteral("color:#666;"));
+        v->addWidget(poolInfo_);
+
+        poolTable_ = new QTableWidget();
+        QStringList h = { QStringLiteral("代码"), QStringLiteral("名称"),
+                          QStringLiteral("来源"), QStringLiteral("加入时间") };
+        poolTable_->setColumnCount(h.size());
+        poolTable_->setHorizontalHeaderLabels(h);
+        poolTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        poolTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        poolTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+        poolTable_->setAlternatingRowColors(true);
+        poolTable_->setSortingEnabled(true);
+        poolTable_->verticalHeader()->setVisible(false);
+        poolTable_->setToolTip(QStringLiteral("双击某一行看该股详情"));
+        connect(poolTable_, &QTableWidget::cellDoubleClicked, this, [this](int r, int) {
+            if (!poolTable_) return;
+            QTableWidgetItem* it = poolTable_->item(r, 0);
+            if (it) showStockDetailByCode(it->text().toStdString());
+        });
+        v->addWidget(poolTable_, 1);
+
+        auto* prow = new QHBoxLayout();
+        auto* btnDel = new QPushButton(QStringLiteral("删除选中"));
+        connect(btnDel, &QPushButton::clicked, this, [this]() {
+            const QStringList codes = tableSelectedCodes(poolTable_);
+            if (codes.isEmpty()) { status_->setText(QStringLiteral("没有选中行")); return; }
+            removeCodesFromPool(codes);
+        });
+        prow->addWidget(btnDel);
+        auto* btnLoad = new QPushButton(QStringLiteral("→ 填进代码框"));
+        btnLoad->setToolTip(QStringLiteral("把池里的代码放到左侧【股票代码】框, 直接体检/回测"));
+        connect(btnLoad, &QPushButton::clicked, this, [this]() {
+            loadPool();
+        });
+        prow->addWidget(btnLoad);
+        auto* btnClr = new QPushButton(QStringLiteral("清空"));
+        connect(btnClr, &QPushButton::clicked, this, [this]() {
+            const int n = poolCount(poolDbPath());
+            if (n <= 0) return;
+            if (QMessageBox::question(this, QStringLiteral("清空默认池"),
+                    QStringLiteral("确定清空池里的 %1 只? (只影响 pool.db, 不动K线数据)").arg(n),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+            QString err;
+            poolClear(poolDbPath(), &err);
+            reloadPoolTable();
+            status_->setText(QStringLiteral("默认池已清空"));
+        });
+        prow->addWidget(btnClr);
+        auto* btnExp = new QPushButton(QStringLiteral("导出 CSV"));
+        connect(btnExp, &QPushButton::clicked, this, [this]() {
+            const auto items = poolLoad(poolDbPath());
+            if (items.empty()) { status_->setText(QStringLiteral("池是空的, 没得导")); return; }
+            const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出默认池"),
+                QDir::homePath() + QStringLiteral("/stock_pool.csv"), QStringLiteral("CSV 文件 (*.csv)"));
+            if (path.isEmpty()) return;
+            QFile f(path);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("写不了: ") + path);
+                return;
+            }
+            QTextStream ts(&f);
+            ts.setCodec("UTF-8");
+            ts << "\xEF\xBB\xBF";
+            ts << "代码,名称,来源,加入时间\n";
+            for (const PoolItem& it : items) {
+                ts << it.code << ',' << QString(it.name).replace(',', ' ') << ','
+                   << QString(it.source).replace(',', ' ') << ',' << it.addedAt << '\n';
+            }
+            f.close();
+            status_->setText(QStringLiteral("默认池已导出: %1 (%2 只)").arg(path).arg((int)items.size()));
+        });
+        prow->addWidget(btnExp);
+        prow->addStretch();
+        auto* btnClose = new QPushButton(QStringLiteral("关闭"));
+        connect(btnClose, &QPushButton::clicked, poolDlg_, &QDialog::accept);
+        prow->addWidget(btnClose);
+        v->addLayout(prow);
+
+        // 批量粘贴导入: 从别处(聊天/文件/旧版)拷一串代码进来最省事
+        auto* irow = new QHBoxLayout();
+        irow->addWidget(new QLabel(QStringLiteral("粘贴代码(逗号/空格/换行分隔):")));
+        poolPasteEdit_ = new QLineEdit();
+        poolPasteEdit_->setPlaceholderText(QStringLiteral("600519.SH, 000001, sz002730 ..."));
+        irow->addWidget(poolPasteEdit_, 1);
+        auto* btnImp = new QPushButton(QStringLiteral("追加到池"));
+        connect(btnImp, &QPushButton::clicked, this, [this]() {
+            if (!poolPasteEdit_) return;
+            const QStringList codes = poolNormalizeList(poolPasteEdit_->text());
+            if (codes.isEmpty()) { status_->setText(QStringLiteral("没解析出代码")); return; }
+            addCodesToPool(codes, QStringLiteral("粘贴导入"));
+            poolPasteEdit_->clear();
+        });
+        irow->addWidget(btnImp);
+        v->addLayout(irow);
+
+        poolDlg_->resize(720, 520);
+    }
+    reloadPoolTable();
+    poolDlg_->show();
+    poolDlg_->raise();
+    poolDlg_->activateWindow();
 }
 
 void MainWindow::fillTable(const std::vector<Stats>& rows) {
@@ -1824,6 +2142,24 @@ void MainWindow::showStockDetailByCode(const std::string& code) {
             .arg(QString::fromStdString(name)).arg((int)rows.size()));
     }
     lay->addWidget(tabs);
+    // 底部: 直接把这只票存进默认池(不用绕回结果表右键)
+    {
+        auto* brow = new QHBoxLayout();
+        auto* btnPoolAdd = new QPushButton();
+        const bool inPool = poolContains(poolDbPath(), QString::fromStdString(code));
+        btnPoolAdd->setText(inPool ? QStringLiteral("已在默认池 ✓")
+                                   : QStringLiteral("☆ 加入默认池"));
+        btnPoolAdd->setEnabled(!inPool);
+        connect(btnPoolAdd, &QPushButton::clicked, &dlg, [this, code, btnPoolAdd]() {
+            addCodesToPool(QStringList{ poolNormalize(QString::fromStdString(code)) },
+                           QStringLiteral("个股详情"));
+            btnPoolAdd->setText(QStringLiteral("已在默认池 ✓"));
+            btnPoolAdd->setEnabled(false);
+        });
+        brow->addStretch();
+        brow->addWidget(btnPoolAdd);
+        lay->addLayout(brow);
+    }
     dlg.resize(900, 700);
     dlg.exec();
 }

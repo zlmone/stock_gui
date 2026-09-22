@@ -76,6 +76,7 @@ if(Qt5_FOUND)
         src/backtest.cpp
         src/klinechart.cpp
         src/news.cpp
+        src/pool.cpp
         ${SQLITE_SRC}
     )
     target_include_directories(stock_gui PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3)

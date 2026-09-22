@@ -122,6 +122,16 @@ private:
     void exportFundFlowCsv();                 // 导出当前(筛选后)结果为 CSV
     std::vector<FundFlowDay> fundFlowFiltered() const;
 
+    // --- 默认池 (pool.db; 原先写死在 loadPool() 里的那串代码现在存在库里) ---
+    void updatePoolButton();                                  // 按钮文字带上池内数量
+    int  addCodesToPool(const QStringList& codes, const QString& source);  // 返回新增条数
+    void removeCodesFromPool(const QStringList& codes);
+    void saveCodeBoxToPool();                                 // 把代码框内容覆盖式存为默认池
+    void showPoolManager();                                   // 池管理对话框
+    void reloadPoolTable();                                   // 刷新池管理里的表
+    void attachTableContextMenu(QTableWidget* t, const QString& what);  // 结果表统一右键菜单
+    QStringList tableSelectedCodes(QTableWidget* t) const;    // 选中行(无选中则当前行)的代码
+
     // --- 数据 ---
     class QPushButton* btnUpdate_ = nullptr;
     QTableWidget* table_ = nullptr;
@@ -236,6 +246,13 @@ private:
     class QDoubleSpinBox* ffMinPct_ = nullptr;      // 主力净占比 >= (%)
     class QDoubleSpinBox* ffMaxChg_ = nullptr;      // 涨幅 <= (%)
     std::vector<FundFlowDay> ffAll_;                // 库中该日全部资金流(降序)
+
+    // 默认池 (pool.db)
+    class QPushButton*  btnPool_ = nullptr;         // "加载默认池 (N只)"
+    class QDialog*      poolDlg_ = nullptr;         // 池管理对话框
+    QTableWidget*       poolTable_ = nullptr;       // 池内容表
+    class QLabel*       poolInfo_ = nullptr;        // 池信息行(数量 + 文件位置)
+    class QLineEdit*    poolPasteEdit_ = nullptr;   // 批量粘贴代码追加
 
     Engine engine_;
     bool engineReady_ = false;
