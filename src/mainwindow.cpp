@@ -2162,10 +2162,24 @@ void MainWindow::runFormScan() {
     std::string latestDate = engine_.latestMarketDate();
     int skipped = 0;
     QElapsedTimer et; et.start();
+
+    // 全市场相对强度 RPS: 扫描前用一条 SQL 聚合算好(策略里可用 s.rps 做横截面过滤)。
+    // 单只股票的 on_scan 拿不到市场分布, 所以必须在这里先算、再逐只注入。
+    const int rpsDays = 120;
+    std::map<std::string, double> rpsMap;
+    {
+        status_->setText(QStringLiteral("计算全市场相对强度 (RPS %1日) ...").arg(rpsDays));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        rpsMap = engine_.marketRps(rpsDays);
+    }
+
     for (int i = 0; i < n; i++) {
         auto bars = engine_.loadSeries(stocks[i].first, 600);
         if (!bars.empty() && isStaleStock(bars.back().date, latestDate)) { skipped++; continue; }   // 停牌/退市
-        auto r = sess.test(bars);
+        double rps = 0.0;
+        auto itR = rpsMap.find(stocks[i].first);
+        if (itR != rpsMap.end()) rps = itR->second;
+        auto r = sess.test(bars, rps);
         if (r.ok && r.passed) {
             ScanHitRow h;
             h.code = stocks[i].first;
@@ -2189,9 +2203,11 @@ void MainWindow::runFormScan() {
     if (resultStack_) resultStack_->setCurrentIndex(1);
     if (btnViewScan_) btnViewScan_->setChecked(true);
     if (rightTabs_) rightTabs_->setCurrentIndex(0);
-    status_->setText(QStringLiteral("形态筛选[%1]: 命中 %2 / %3 只(跳过停牌%4) | 耗时 %5 秒 | 双击可看备注")
+    status_->setText(QStringLiteral("形态筛选[%1]: 命中 %2 / %3 只(跳过停牌%4) | RPS池 %5 只 | 耗时 %6 秒 | 双击可看备注")
         .arg(QString::fromStdString(sess.strategyName))
-        .arg((int)scanHits_.size()).arg(n).arg(skipped).arg(et.elapsed() / 1000.0, 0, 'f', 1));
+        .arg((int)scanHits_.size()).arg(n).arg(skipped)
+        .arg((int)rpsMap.size())
+        .arg(et.elapsed() / 1000.0, 0, 'f', 1));
 }
 
 void MainWindow::fillScanTable() {

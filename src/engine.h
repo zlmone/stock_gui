@@ -8,6 +8,7 @@
 // ============================================================
 #pragma once
 #include <string>
+#include <map>
 
 // 程序版本号 (窗口标题/诊断输出/说明文档统一对齐)
 #define APP_VERSION "2.9"
@@ -109,6 +110,11 @@ public:
 
     // 全市场最新交易日 (停牌/退市股过滤用)
     std::string latestMarketDate();
+
+    // 全市场相对强度 RPS: 按"最近 days 个交易日的涨幅"在全市场排名得到的百分位。
+    // 100 = 最强, 0 = 最弱; 例如 RPS>=80 表示跑到全市场前 20%。
+    // 用一条带窗口函数的 SQL 聚合算出(不逐只加载K线), 供全市场扫描/策略使用。
+    std::map<std::string, double> marketRps(int days = 120);
 
     // 拼接K线序列: 全历史库(截止某日) + 最新库(近期窗口), 返回按日期升序
     std::vector<Bar> loadSeries(const std::string& code, int maxBars);

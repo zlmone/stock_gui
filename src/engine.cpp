@@ -206,6 +206,49 @@ static std::vector<Bar> queryBars(sqlite3* db, const std::string& code, int limi
     return out;
 }
 
+// 全市场相对强度 RPS: 一条 SQL 算出每只"最近 days 个交易日涨幅", 再按排名给百分位。
+// 用窗口函数在库内完成聚合, 避免为了排名把全市场K线都读进内存。
+// RPS=100 最强 / 0 最弱; 例如 RPS>=80 即"跑进全市场前 20%"。
+std::map<std::string, double> Engine::marketRps(int days) {
+    std::map<std::string, double> out;
+    if (!dbLatest_ || days < 5) return out;
+
+    const char* sql =
+        "WITH r AS ("
+        "  SELECT code, close, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn"
+        "  FROM kline_daily"
+        ") "
+        "SELECT code, "
+        "  MAX(CASE WHEN rn=1 THEN close END) AS c1, "
+        "  MAX(CASE WHEN rn=?1 THEN close END) AS cN "
+        "FROM r WHERE rn <= ?1 GROUP BY code";
+
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(dbLatest_, sql, -1, &st, nullptr) != SQLITE_OK) return out;
+    sqlite3_bind_int(st, 1, days);
+
+    std::vector<std::pair<std::string, double>> rets;
+    rets.reserve(8192);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const unsigned char* cp = sqlite3_column_text(st, 0);
+        const double c1 = sqlite3_column_double(st, 1);
+        const double cN = sqlite3_column_double(st, 2);
+        if (!cp || c1 <= 0 || cN <= 0) continue;
+        rets.push_back(std::make_pair(std::string((const char*)cp), (c1 - cN) / cN));
+    }
+    sqlite3_finalize(st);
+    if (rets.empty()) return out;
+
+    std::sort(rets.begin(), rets.end(),
+              [](const std::pair<std::string, double>& a, const std::pair<std::string, double>& b) {
+                  return a.second < b.second;
+              });
+    const double n = (double)rets.size();
+    for (size_t i = 0; i < rets.size(); ++i)
+        out[rets[i].first] = (n <= 1.0) ? 100.0 : (double)i / (n - 1.0) * 100.0;
+    return out;
+}
+
 std::vector<Bar> Engine::loadSeries(const std::string& code, int maxBars) {
     // 历史库取 maxBars 根 + 最新库全部, 用 map 去重合并
     std::map<std::string, Bar> m;

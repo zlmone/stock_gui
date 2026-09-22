@@ -101,7 +101,9 @@ public:
     const std::string& error() const { return error_; }
     std::string strategyName;                            // strategy.name
 
-    ScanResult test(const std::vector<Bar>& bars);       // 用最近30根K线做一次筛选
+    // 用最近30根K线做一次筛选; rps>0 时注入 s.rps(全市场相对强度百分位),
+    // 供策略做横截面过滤 —— 单只股票自己算不出这个值, 必须由引擎从全市场算好传入。
+    ScanResult test(const std::vector<Bar>& bars, double rps = 0.0);
 
 private:
     lua_State* L_ = nullptr;

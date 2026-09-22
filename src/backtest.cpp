@@ -518,7 +518,7 @@ ScanSession::~ScanSession() {
     if (L_) lua_close(L_);
 }
 
-ScanResult ScanSession::test(const std::vector<Bar>& bars) {
+ScanResult ScanSession::test(const std::vector<Bar>& bars, double rps) {
     ScanResult res;
     if (!ok_ || !L_) { res.error = "会话未初始化"; return res; }
     size_t n = bars.size();
@@ -575,6 +575,10 @@ ScanResult ScanSession::test(const std::vector<Bar>& bars) {
     lua_pushinteger(L_, m); lua_setfield(L_, s_idx, "n");
     lua_pushnumber(L_, bars[n-1].close); lua_setfield(L_, s_idx, "spot");
     lua_pushstring(L_, bars[n-1].date.c_str()); lua_setfield(L_, s_idx, "date");
+    if (rps > 0.0) {                       // 全市场相对强度百分位(由引擎预计算注入)
+        lua_pushnumber(L_, rps);
+        lua_setfield(L_, s_idx, "rps");
+    }
 
     // 调用 on_scan(s)
     lua_rawgeti(L_, LUA_REGISTRYINDEX, fn_ref_);
