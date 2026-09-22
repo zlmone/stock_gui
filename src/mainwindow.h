@@ -157,7 +157,11 @@ private:
     class QComboBox*    newsInterval_ = nullptr;
     class QComboBox*    newsOpenMode_ = nullptr;  // 双击打开方式: 程序内 / 本地浏览器 / 网上浏览
     class QGroupBox*    codeStudioBox_ = nullptr;  // 策略代码工作室(作为右侧独立标签页, 便于最大化编辑)
-    class QWidget*      filterBox_ = nullptr;      // 筛选条件(可折叠), 稍后挂到"四维体检"页顶部
+    class QWidget*      filterBox_ = nullptr;      // 筛选条件(可折叠), 挂到"四维体检"页顶部
+    class QWidget*      presetBox_ = nullptr;      // 预设策略(一键配置), 挂到"四维体检"页顶部
+    class QWidget*      strategyCtlBox_ = nullptr; // 策略选择/参数/回测按钮组, 挂到"策略"标签页
+    class QWidget*      settingsBox_ = nullptr;    // 体检口径, 收进"设置"对话框
+    class QDialog*      settingsDlg_ = nullptr;    // 设置对话框(低频项)
     class QTimer*       newsTimer_ = nullptr;
     QNetworkAccessManager* newsNM_ = nullptr;
 

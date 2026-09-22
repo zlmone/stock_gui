@@ -65,6 +65,7 @@ static bool newsOffline() { return g_newsFailures >= 3; }
 #include <QAction>
 #include <QKeySequence>
 #include <QToolButton>
+#include <QDialogButtonBox>
 
 // 带数值的表格项: 点表头排序时按数值比较(而非字符串), 如 "+20.3%" vs "-2.4%"
 class NumericItem : public QTableWidgetItem {
@@ -286,6 +287,12 @@ void MainWindow::buildUI() {
         aNews->setShortcut(QKeySequence(QStringLiteral("Ctrl+N")));
         connect(aNews, &QAction::triggered, this, &MainWindow::updateNews);
         mData->addSeparator();
+        auto* aSet = mData->addAction(QStringLiteral("设置…"));
+        aSet->setShortcut(QKeySequence(QStringLiteral("Ctrl+,")));
+        connect(aSet, &QAction::triggered, this, [this]() {
+            if (settingsDlg_) { settingsDlg_->show(); settingsDlg_->raise(); settingsDlg_->activateWindow(); }
+        });
+        mData->addSeparator();
         auto* aQuit = mData->addAction(QStringLiteral("退出"));
         aQuit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
         connect(aQuit, &QAction::triggered, this, &QWidget::close);
@@ -378,6 +385,20 @@ void MainWindow::buildUI() {
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     leftLay->addWidget(scroll, 1);
 
+    // ---- 设置对话框: 收纳低频项(体检口径 / 数据选项), 从 菜单 数据 → 设置… 打开 ----
+    {
+        settingsDlg_ = new QDialog(this);
+        settingsDlg_->setWindowTitle(QStringLiteral("设置"));
+        settingsDlg_->resize(480, 360);
+        auto* sl = new QVBoxLayout(settingsDlg_);
+        if (settingsBox_) sl->addWidget(settingsBox_);
+        if (fundFlowOn_) sl->addWidget(fundFlowOn_);
+        sl->addStretch();
+        auto* bb = new QDialogButtonBox(QDialogButtonBox::Close);
+        connect(bb, &QDialogButtonBox::rejected, settingsDlg_, &QDialog::accept);
+        sl->addWidget(bb);
+    }
+
     // ---- 右侧结果区 ----
     auto* right = new QWidget();
     auto* rv = new QVBoxLayout(right);
@@ -411,6 +432,8 @@ void MainWindow::buildUI() {
         auto* cpl = new QVBoxLayout(checkPage);
         cpl->setContentsMargins(0, 0, 0, 0);
         if (filterBox_) cpl->addWidget(filterBox_);
+        if (presetBox_) cpl->addWidget(presetBox_);   // 预设策略(一键配置筛选)
+        if (onlyMatch_) cpl->addWidget(onlyMatch_);   // 仅显示满足条件的股票
         cpl->addWidget(table_, 1);
         rightTabs_->addTab(checkPage, QStringLiteral("四维体检"));
     }
@@ -459,7 +482,24 @@ void MainWindow::buildUI() {
         btl->addLayout(fb);
         btl->addWidget(btTable_, 1);
     }
-    rightTabs_->addTab(btPage, QStringLiteral("策略回测"));
+    // ---- 「策略」页: 策略选择/参数 + 回测结果 + 代码编辑器 ----
+    //   原先这三样分散在"左栏 / 策略回测标签 / 策略代码标签", 现在集中到一页
+    {
+        auto* stratPage = new QWidget();
+        auto* spl = new QVBoxLayout(stratPage);
+        spl->setContentsMargins(3, 3, 3, 3);
+        spl->setSpacing(6);
+        if (strategyCtlBox_) spl->addWidget(strategyCtlBox_);   // 选策略 / 调参 / 语法检查 / 回测按钮
+
+        auto* vsplit = new QSplitter(Qt::Vertical);
+        vsplit->addWidget(btPage);                             // 回测结果(含结果筛选条)
+        if (codeStudioBox_) vsplit->addWidget(codeStudioBox_); // .lua 代码编辑器
+        vsplit->setStretchFactor(0, 1);
+        vsplit->setStretchFactor(1, 1);
+        vsplit->setSizes({ 420, 380 });
+        spl->addWidget(vsplit, 1);
+        rightTabs_->addTab(stratPage, QStringLiteral("策略"));
+    }
 
     // 过滤条件变化 → 即时刷新
     connect(btF1On_, &QCheckBox::toggled, this, &MainWindow::onBtFiltersChanged);
@@ -556,9 +596,7 @@ void MainWindow::buildUI() {
     newsLay->addWidget(newsTable_, 1);
     rightTabs_->addTab(newsWidget, QStringLiteral("新闻资讯"));
 
-    // 策略代码工作室: 独立标签页(放在最后), 这样才能最大化查看/编辑整份 .lua
-    if (codeStudioBox_) rightTabs_->addTab(codeStudioBox_, QStringLiteral("策略代码"));
-
+    // (策略代码工作室已并入上面的「策略」页, 与回测结果上下分栏)
     rv->addWidget(rightTabs_, 1);
 
     status_ = new QLabel(QStringLiteral("初始化中..."));
@@ -615,7 +653,7 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
         hint->setStyleSheet(QStringLiteral("color:#888; font-size:11px;"));
         fl->addRow(hint);
     }
-    sv->addWidget(gbParam);
+    settingsBox_ = gbParam;   // 低频项, 收进"设置"对话框(菜单 数据 → 设置…)
 
     // ---------- 筛选条件 ----------
     auto* gbF = new CollapsibleBox(QStringLiteral("筛选条件"), false /*默认收起*/);
@@ -708,7 +746,7 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
         connect(b, &QPushButton::clicked, this, [this, id]() { applyPreset(id); });
         pg->addWidget(b, i / 2, i % 2);
     }
-    sv->addWidget(gbPre);
+    presetBox_ = gbPre;       // 与筛选条件同属"筛结果", 挂到"四维体检"页顶部
 
     // ---------- 策略回测 (Lua 脚本) ----------
     auto* gbBt = new QGroupBox(QStringLiteral("策略回测 (Lua)\n各策略参数在 strategies/*.lua 文件顶部编辑"));
@@ -816,7 +854,7 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     edHint->setWordWrap(true);
     edHint->setStyleSheet(QStringLiteral("color:#888; font-size:11px;"));
     edvl->addWidget(edHint);
-    sv->addWidget(gbBt);
+    strategyCtlBox_ = gbBt;   // 策略相关整体挪到右侧"策略"标签页
 
     // "策略代码工作室"不挂到左侧栏(那里太窄, 编辑区展不开), 而是作为
     // 右侧的独立标签页加入(见构造函数里 rightTabs_->addTab)。
@@ -828,12 +866,12 @@ void MainWindow::buildSidePanel(QVBoxLayout* sv) {
     // ---------- 显示选项 + 执行 ----------
     onlyMatch_ = new QCheckBox(QStringLiteral("仅显示满足条件的股票"));
     onlyMatch_->setChecked(false);
-    sv->addWidget(onlyMatch_);
+    // onlyMatch_(仅显示满足条件) 也归到"四维体检"页, 与结果放在一起
 
     fundFlowOn_ = new QCheckBox(QStringLiteral("详情查询主力资金流 (需联网)"));
     fundFlowOn_->setChecked(true);
     fundFlowOn_->setToolTip(QStringLiteral("关闭后完全离线工作; 离线环境下程序也会自动跳过"));
-    sv->addWidget(fundFlowOn_);
+    // fundFlowOn_(详情查询主力资金流) 属低频/数据类选项, 收进"设置"对话框
 
     // (三个按钮已移到顶部操作条 / 菜单; "板块聚合统计" 见菜单 运行)
 
