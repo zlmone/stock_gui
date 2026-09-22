@@ -142,6 +142,7 @@ struct SnapRow {
     double mktcap = 0;       // 总市值(亿)
     double fcap = 0;         // 流通市值(亿)
     QString date;   // YYYY-MM-DD (取自时间戳前8位)
+    QString time;   // HH:MM:SS (取自时间戳第9-14位, 供实时盯盘判断新鲜度)
 };
 
 // stocks 表附加信息 (名称/市值/换手)
@@ -178,6 +179,10 @@ static void parseSnapshot(const QByteArray& raw, QHash<QString, SnapRow>& out) {
         if (p[30].length() >= 8) {            // "20260918150000"
             QString d8 = p[30].left(8);
             r.date = d8.left(4) + "-" + d8.mid(4, 2) + "-" + d8.mid(6, 2);
+            if (p[30].length() >= 14) {       // 带时分秒 -> 供盯盘显示行情时间
+                const QString t6 = p[30].mid(8, 6);
+                r.time = t6.left(2) + ":" + t6.mid(2, 2) + ":" + t6.mid(4, 2);
+            }
         }
         out.insert(fromTencentCode(tc), r);
     }
@@ -567,6 +572,53 @@ static void refreshStockMeta(QNetworkAccessManager& mgr, const QVector<QString>&
         }
         rep->deleteLater();
     }
+}
+
+// ==================== 实时行情 (批量快照, 供实时盯盘) ====================
+QVector<Quote> fetchQuotes(const QStringList& codes) {
+    QVector<Quote> out;
+    if (codes.isEmpty()) return out;
+
+    QNetworkAccessManager mgr;
+    QHash<QString, SnapRow> snaps;
+    const int B = 60;                      // 盯盘通常只有几十只, 一批足够
+    for (int i = 0; i < codes.size(); i += B) {
+        QStringList tcs;
+        for (int j = i; j < i + B && j < codes.size(); j++)
+            tcs << toTencentCode(codes[j]);
+        QNetworkRequest req(QUrl(QStringLiteral("http://qt.gtimg.cn/q=") + tcs.join(',')));
+        req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mozilla/5.0"));
+        req.setTransferTimeout(8000);
+        QNetworkReply* rep = mgr.get(req);
+        QEventLoop loop;
+        QObject::connect(rep, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        if (rep->error() == QNetworkReply::NoError)
+            parseSnapshot(rep->readAll(), snaps);
+        rep->deleteLater();
+    }
+
+    for (const QString& c : codes) {
+        auto it = snaps.constFind(c);
+        if (it == snaps.constEnd()) continue;
+        Quote q;
+        q.ok       = true;
+        q.code     = c;
+        q.name     = it->name;
+        q.price    = it->price;
+        q.prev     = it->prev;
+        q.open     = it->open;
+        q.high     = it->high;
+        q.low      = it->low;
+        q.volume   = it->volume;
+        q.amount   = it->amount;
+        q.turnover = it->turnover;
+        q.mktcap   = it->mktcap;
+        q.date     = it->date;
+        q.time     = it->time;
+        out.push_back(q);
+    }
+    return out;
 }
 
 // ==================== 主力资金流 (新浪, 单票) ====================

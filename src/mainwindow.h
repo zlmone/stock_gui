@@ -7,6 +7,9 @@
 #include "engine.h"
 #include "backtest.h"
 #include "news.h"
+#include <QHash>
+#include <QVector>
+#include <QStringList>
 
 class QsciScintilla;   // QScintilla 源码编辑器(仅用指针, 完整头文件在 mainwindow.cpp 中引入)
 
@@ -61,6 +64,12 @@ private slots:
     void loadNewsView(const QString& category);  // 按分类从缓存刷新新闻表
     void onNewsRowActivated(int row);        // 双击列表行 -> 打开本地阅读器(离线可读)
     void showNewsReader(const NewsItem& it); // 本地新闻阅读器: 显示已缓存正文, 可在线补抓全文
+
+    // --- 实时盯盘 ---
+    void watchRebuild();          // 重算基线四维指标(较慢, 导入股票时做一次)
+    void watchTick();             // 一次实时检测(快): 拉快照 + 用基线指标算评分
+    void watchImportFromCodes();  // 用【股票代码】框里的股票
+    void watchImportFromTable();  // 用当前【四维体检】结果里的股票
     void openNewsHtmlLocal(const NewsItem& it); // 把正文渲染成本地 HTML, 用系统浏览器打开(离线可看)
     static QByteArray fetchNewsFeed(QNetworkAccessManager& mgr, const QString& url,
                                     int timeoutMs, QString* err);  // 单 feed 同步拉取
@@ -165,6 +174,15 @@ private:
     class QTimer*       newsTimer_ = nullptr;
     QNetworkAccessManager* newsNM_ = nullptr;
     class QLabel*       newsStatus_ = nullptr;   // 新闻页自己的状态行(不再覆盖全局状态栏)
+
+    // 实时盯盘
+    QTableWidget*       watchTable_ = nullptr;
+    class QComboBox*    watchInterval_ = nullptr;
+    class QPushButton*  btnWatchNow_ = nullptr;
+    class QTimer*       watchTimer_ = nullptr;
+    class QLabel*       watchStatus_ = nullptr;
+    QHash<QString, Stats> watchBase_;   // 基线四维指标(按代码缓存, 只在导入时重算)
+    QVector<QString>      watchCodes_;  // 正在盯的股票
     class QSplitter*    splitter_ = nullptr;     // 主分栏(用于记忆左右宽度)
     class QStackedWidget* resultStack_ = nullptr; // 四维体检页内的两个结果视图(个股体检/形态筛选)
     class QPushButton*  btnViewCheck_ = nullptr;  // 切到 个股体检

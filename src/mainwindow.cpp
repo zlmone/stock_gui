@@ -319,9 +319,9 @@ void MainWindow::buildUI() {
 
         auto* mView = menuBar()->addMenu(QStringLiteral("视图(&V)"));
         // 与右侧实际标签页一一对应(3 个: 四维体检 / 策略 / 新闻资讯)
-        const QString tabNames[3] = { QStringLiteral("四维体检"), QStringLiteral("策略"),
-                                      QStringLiteral("新闻资讯") };
-        for (int i = 0; i < 3; ++i) {
+        const QString tabNames[4] = { QStringLiteral("四维体检"), QStringLiteral("策略"),
+                                      QStringLiteral("新闻资讯"), QStringLiteral("实时盯盘") };
+        for (int i = 0; i < 4; ++i) {
             auto* a = mView->addAction(tabNames[i]);
             a->setShortcut(QKeySequence(QStringLiteral("Ctrl+%1").arg(i + 1)));
             connect(a, &QAction::triggered, this, [this, i]() {
@@ -330,7 +330,7 @@ void MainWindow::buildUI() {
         }
         mView->addSeparator();
         auto* aScanView = mView->addAction(QStringLiteral("形态筛选视图"));
-        aScanView->setShortcut(QKeySequence(QStringLiteral("Ctrl+4")));
+        aScanView->setShortcut(QKeySequence(QStringLiteral("Ctrl+5")));
         connect(aScanView, &QAction::triggered, this, [this]() {
             if (resultStack_) resultStack_->setCurrentIndex(1);
             if (btnViewScan_) btnViewScan_->setChecked(true);
@@ -652,6 +652,83 @@ void MainWindow::buildUI() {
     newsStatus_->setStyleSheet(QStringLiteral("color:#666;"));
     newsLay->addWidget(newsStatus_);
     rightTabs_->addTab(newsWidget, QStringLiteral("新闻资讯"));
+
+    // ---- 实时盯盘: 每 N 秒拉一次实时行情, 用基线四维指标算买入评分与信号 ----
+    {
+        auto* watchPage = new QWidget();
+        auto* wl = new QVBoxLayout(watchPage);
+        wl->setContentsMargins(3, 3, 3, 3);
+
+        auto* crow = new QHBoxLayout();
+        crow->addWidget(new QLabel(QStringLiteral("每")));
+        watchInterval_ = new QComboBox();
+        watchInterval_->addItem(QStringLiteral("关闭"), 0);
+        watchInterval_->addItem(QStringLiteral("30 秒"), 30);
+        watchInterval_->addItem(QStringLiteral("1 分钟"), 60);
+        watchInterval_->addItem(QStringLiteral("2 分钟"), 120);
+        watchInterval_->addItem(QStringLiteral("5 分钟"), 300);
+        watchInterval_->setCurrentIndex(2);          // 默认 1 分钟
+        watchInterval_->setToolTip(QStringLiteral("自动检测间隔; 只拉实时快照, 不会重算回测"));
+        crow->addWidget(watchInterval_);
+        crow->addWidget(new QLabel(QStringLiteral("自动检测一次")));
+
+        btnWatchNow_ = new QPushButton(QStringLiteral("立即检测"));
+        connect(btnWatchNow_, &QPushButton::clicked, this, &MainWindow::watchTick);
+        crow->addWidget(btnWatchNow_);
+
+        auto* bImpCodes = new QPushButton(QStringLiteral("用【股票代码】框"));
+        bImpCodes->setToolTip(QStringLiteral("把左侧股票代码框里的股票加入盯盘, 并重算一次基线指标"));
+        connect(bImpCodes, &QPushButton::clicked, this, &MainWindow::watchImportFromCodes);
+        crow->addWidget(bImpCodes);
+
+        auto* bImpTable = new QPushButton(QStringLiteral("用当前体检结果"));
+        bImpTable->setToolTip(QStringLiteral("把【四维体检】页表格里的股票加入盯盘"));
+        connect(bImpTable, &QPushButton::clicked, this, &MainWindow::watchImportFromTable);
+        crow->addWidget(bImpTable);
+        crow->addStretch();
+        wl->addLayout(crow);
+
+        watchTable_ = new QTableWidget();
+        const QStringList wh = {
+            QStringLiteral("代码"), QStringLiteral("名称"), QStringLiteral("现价"),
+            QStringLiteral("涨跌%"), QStringLiteral("量比"), QStringLiteral("现价/MA20%"),
+            QStringLiteral("60位"), QStringLiteral("修复率%"), QStringLiteral("回测%"),
+            QStringLiteral("筹码获利%"), QStringLiteral("评分"), QStringLiteral("信号"),
+            QStringLiteral("行情时间")
+        };
+        watchTable_->setColumnCount(wh.size());
+        watchTable_->setHorizontalHeaderLabels(wh);
+        watchTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        watchTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+        watchTable_->setAlternatingRowColors(true);
+        watchTable_->verticalHeader()->setVisible(false);
+        watchTable_->horizontalHeader()->setStretchLastSection(true);
+        watchTable_->setSortingEnabled(false);
+        wl->addWidget(watchTable_, 1);
+
+        // 自动检测定时器(默认 1 分钟)
+        watchTimer_ = new QTimer(this);
+        connect(watchTimer_, &QTimer::timeout, this, &MainWindow::watchTick);
+        connect(watchInterval_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+            if (!watchTimer_) return;
+            const int sec = watchInterval_->currentData().toInt();
+            if (sec > 0) {
+                watchTimer_->start(sec * 1000);
+                if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 每 %1 秒自动检测一次").arg(sec));
+            } else {
+                watchTimer_->stop();
+                if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 自动检测已关闭(可点【立即检测】)"));
+            }
+        });
+        watchTimer_->start(60 * 1000);   // 与默认选项(1 分钟)一致
+
+        watchStatus_ = new QLabel(QStringLiteral("实时盯盘: 未开始 (先点【用股票代码框】导入)"));
+        watchStatus_->setWordWrap(true);
+        watchStatus_->setStyleSheet(QStringLiteral("color:#666;"));
+        wl->addWidget(watchStatus_);
+
+        rightTabs_->addTab(watchPage, QStringLiteral("实时盯盘"));
+    }
 
     // (策略代码工作室已并入上面的「策略」页, 与回测结果上下分栏)
     rv->addWidget(rightTabs_, 1);
@@ -2697,4 +2774,229 @@ void MainWindow::openNewsHtmlLocal(const NewsItem& src) {
     f.close();
     QDesktopServices::openUrl(QUrl::fromLocalFile(file));
     if (newsStatus_) newsStatus_->setText(QStringLiteral("已生成本地副本并用浏览器打开: %1").arg(file));
+}
+
+// ==================== 实时盯盘 ====================
+
+// 买入评分(0-100): 在现有四维指标上叠加实时价, 分数越高越偏向买入。
+// 权重合计 100 —— 趋势 28 / 位置 20 / 行为 20 / 量能 16 / 估值 16,
+// 最后用 Stats::verdict 封顶(下跌趋势、高位不该给高分)。权重可按需调整。
+static int watchScoreOf(const Stats& s, double livePrice) {
+    if (livePrice <= 0) livePrice = s.price;
+    int sc = 0;
+
+    // --- 趋势 28: 现价站上均线 + 多头排列 ---
+    if (s.ma5  > 0 && livePrice > s.ma5)  sc += 7;
+    if (s.ma10 > 0 && livePrice > s.ma10) sc += 7;
+    if (s.ma20 > 0 && livePrice > s.ma20) sc += 7;
+    if (s.ma20 > 0 && s.ma5 > s.ma10 && s.ma10 > s.ma20) sc += 7;
+
+    // --- 位置 20: 本工具是"急杀反弹"逻辑, 位置越低越有反弹空间 ---
+    if      (s.pos60 <= 25) sc += 20;
+    else if (s.pos60 <= 45) sc += 15;
+    else if (s.pos60 <= 65) sc += 10;
+    else if (s.pos60 <= 85) sc += 5;
+
+    // --- 行为 20: 修复率 + 样本充足度 + 涨停基因 ---
+    if      (s.fixRate >= 60) sc += 12;
+    else if (s.fixRate >= 45) sc += 9;
+    else if (s.fixRate >= 30) sc += 6;
+    else                      sc += 3;
+    if (s.events  >= 5) sc += 3;
+    if (s.ztCount >= 2) sc += 5;
+
+    // --- 量能 16: 量比 ---
+    if      (s.volRatio >= 1.5) sc += 16;
+    else if (s.volRatio >= 1.2) sc += 12;
+    else if (s.volRatio >= 0.8) sc += 8;
+    else                        sc += 4;
+
+    // --- 估值 16: PB 近 3 年分位(无数据给中性 8 分) ---
+    if      (s.pbPct3y < 0)    sc += 8;
+    else if (s.pbPct3y <= 20)  sc += 16;
+    else if (s.pbPct3y <= 40)  sc += 12;
+    else if (s.pbPct3y <= 60)  sc += 8;
+    else if (s.pbPct3y <= 80)  sc += 4;
+
+    if (sc > 100) sc = 100;
+
+    // --- 用已有状态判定封顶 ---
+    if (s.verdict.find("下跌趋势") != std::string::npos) { if (sc > 45) sc = 45; }
+    else if (s.verdict.find("高位") != std::string::npos) { if (sc > 60) sc = 60; }
+
+    return sc;
+}
+
+static QString watchSignalOf(int score) {
+    if (score >= 80) return QStringLiteral("强烈买入");
+    if (score >= 65) return QStringLiteral("买入");
+    if (score >= 50) return QStringLiteral("偏多");
+    if (score >= 35) return QStringLiteral("观望");
+    if (score >= 20) return QStringLiteral("减仓");
+    return QStringLiteral("卖出");
+}
+
+static QColor watchSignalColor(int score) {
+    if (score >= 80) return QColor(0xc0, 0x28, 0x28);
+    if (score >= 65) return QColor(0xd8, 0x60, 0x20);
+    if (score >= 50) return QColor(0x30, 0x80, 0x30);
+    if (score >= 35) return QColor(0x60, 0x60, 0x60);
+    return QColor(0x20, 0x70, 0xb0);
+}
+
+// 从【股票代码】框导入
+void MainWindow::watchImportFromCodes() {
+    if (!codeEdit_) return;
+    const QStringList parts = codeEdit_->text().split(QRegularExpression(QStringLiteral("[,\\s]+")),
+                                                      Qt::SkipEmptyParts);
+    QStringList codes;
+    for (const QString& p0 : parts) {
+        QString p = p0.trimmed().toUpper();
+        const int dot = p.indexOf('.');
+        if (dot > 0) p = p.left(dot);                       // 600000.SH -> 600000
+        if (p.size() == 6) codes << p;
+    }
+    if (codes.isEmpty()) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 【股票代码】框里没有可识别的 6 位代码"));
+        return;
+    }
+    watchCodes_.clear();
+    for (const QString& c : codes) watchCodes_.push_back(c);
+    watchRebuild();
+}
+
+// 从【四维体检】结果表导入
+void MainWindow::watchImportFromTable() {
+    if (!table_ || table_->rowCount() == 0) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 【四维体检】结果表还是空的, 先跑一次体检"));
+        return;
+    }
+    watchCodes_.clear();
+    for (int r = 0; r < table_->rowCount(); ++r) {
+        QTableWidgetItem* it = table_->item(r, 0);
+        if (!it) continue;
+        QString c = it->text().trimmed();
+        const int dot = c.indexOf('.');
+        if (dot > 0) c = c.left(dot);
+        if (c.size() == 6) watchCodes_.push_back(c);
+    }
+    watchRebuild();
+}
+
+// 重算基线四维指标(较慢: 每只都要算修复率/回测/筹码, 所以只在导入时做一次)
+void MainWindow::watchRebuild() {
+    if (watchCodes_.isEmpty()) { if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 没有股票")); return; }
+
+    AnalyzeParams ap;
+    if (dipSpin_)  ap.dipThreshold = dipSpin_->value();
+    if (tpSpin_)   ap.takeProfit   = tpSpin_->value();
+    if (holdSpin_) ap.holdDays     = holdSpin_->value();
+
+    watchBase_.clear();
+    if (btnWatchNow_) btnWatchNow_->setEnabled(false);
+    const int n = watchCodes_.size();
+    for (int i = 0; i < n; ++i) {
+        const QString& code = watchCodes_[i];
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 计算基线指标 %1/%2 ...").arg(i + 1).arg(n));
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        const std::string cs = code.toStdString();
+        const std::string nm = engine_.stockName(cs);
+        const double pb = engine_.latestPb(cs);
+        watchBase_.insert(code, engine_.analyze(cs, nm, pb, ap));
+    }
+    if (btnWatchNow_) btnWatchNow_->setEnabled(true);
+    watchTick();   // 立刻出一次结果
+}
+
+// 一次实时检测: 只拉快照(快) + 用基线指标算评分
+void MainWindow::watchTick() {
+    if (watchCodes_.isEmpty()) {
+        if (watchStatus_) watchStatus_->setText(QStringLiteral("实时盯盘: 未导入股票 (点【用股票代码框】或【用当前体检结果】)"));
+        return;
+    }
+    QStringList codes;
+    for (const QString& c : watchCodes_) codes << c;
+
+    QElapsedTimer et; et.start();
+    const QVector<Quote> qs = fetchQuotes(codes);
+
+    struct Row {
+        QString code, name, sig, qtime;
+        double price = 0, chg = 0, volRatio = 0, vsMa20 = 0, pos60 = 0,
+               fixRate = 0, bt = 0, chip = 0;
+        int score = 0;
+    };
+    QVector<Row> rows;
+    rows.reserve(qs.size());
+    for (const Quote& q : qs) {
+        Stats s;
+        auto it = watchBase_.constFind(q.code);
+        if (it != watchBase_.constEnd()) s = it.value();
+        const double live = q.price > 0 ? q.price : s.price;
+
+        Row r;
+        r.code     = q.code;
+        r.name     = q.name.isEmpty() ? QString::fromStdString(s.name) : q.name;
+        r.price    = q.price;
+        r.chg      = q.prev > 0 ? (q.price - q.prev) / q.prev * 100.0 : 0;
+        r.volRatio = s.volRatio;
+        r.vsMa20   = s.ma20 > 0 ? (live - s.ma20) / s.ma20 * 100.0 : 0;
+        r.pos60    = s.pos60;
+        r.fixRate  = s.fixRate;
+        r.bt       = s.backtest;
+        r.chip     = s.chipProfit;
+        r.score    = watchScoreOf(s, live);
+        r.sig      = watchSignalOf(r.score);
+        r.qtime    = q.time.isEmpty() ? q.date : q.time;
+        rows.push_back(r);
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.score > b.score; });
+
+    int buyCnt = 0;      // 评分>=65 的只数(供状态行使用)
+    if (watchTable_) {
+        watchTable_->setUpdatesEnabled(false);
+        watchTable_->setRowCount(rows.size());
+        for (int r = 0; r < rows.size(); ++r) {
+            const Row& x = rows[r];
+            auto cell = [&](int c, const QString& v) { watchTable_->setItem(r, c, new QTableWidgetItem(v)); };
+            cell(0, x.code);
+            cell(1, x.name);
+            cell(2, QString::number(x.price, 'f', 2));
+            cell(3, QStringLiteral("%1%2%").arg(x.chg >= 0 ? QStringLiteral("+") : QString())
+                        .arg(QString::number(x.chg, 'f', 2)));
+            cell(4, QString::number(x.volRatio, 'f', 2));
+            cell(5, QStringLiteral("%1%2%").arg(x.vsMa20 >= 0 ? QStringLiteral("+") : QString())
+                        .arg(QString::number(x.vsMa20, 'f', 1)));
+            cell(6, QString::number(x.pos60, 'f', 0));
+            cell(7, QString::number(x.fixRate, 'f', 1));
+            cell(8, QString::number(x.bt, 'f', 1));
+            cell(9, x.chip < 0 ? QStringLiteral("-") : QString::number(x.chip, 'f', 1));
+            cell(10, QString::number(x.score));
+            cell(11, x.sig);
+            cell(12, x.qtime);
+
+            // 涨跌/信号配色
+            const QColor cc = x.chg > 0 ? QColor(0xc0, 0x28, 0x28)
+                            : (x.chg < 0 ? QColor(0x20, 0x70, 0xb0) : QColor(0x60, 0x60, 0x60));
+            if (auto* t = watchTable_->item(r, 3)) t->setForeground(cc);
+            if (auto* t = watchTable_->item(r, 2)) t->setForeground(cc);
+            const QColor sc = watchSignalColor(x.score);
+            if (auto* t = watchTable_->item(r, 10)) { t->setForeground(sc); QFont f = t->font(); f.setBold(true); t->setFont(f); }
+            if (auto* t = watchTable_->item(r, 11)) { t->setForeground(sc); QFont f = t->font(); f.setBold(true); t->setFont(f); }
+            if (x.score >= 65) buyCnt++;
+        }
+        watchTable_->resizeColumnsToContents();
+        watchTable_->setUpdatesEnabled(true);
+    }
+
+    if (watchStatus_) {
+        watchStatus_->setText(QStringLiteral("实时盯盘: 共 %1 只 | 评分≥65 的 %2 只 | 上次检测 %3 | 用时 %4 秒%5")
+            .arg(rows.size()).arg(buyCnt)
+            .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss")))
+            .arg(et.elapsed() / 1000.0, 0, 'f', 1)
+            .arg(rows.size() < watchCodes_.size()
+                 ? QStringLiteral(" (有 %1 只没取到行情)").arg(watchCodes_.size() - rows.size())
+                 : QString()));
+    }
 }

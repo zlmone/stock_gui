@@ -53,3 +53,21 @@ bool updateValuationDb(const QString& dbPath, int limit,
 
 // 代码格式转换: "002730.SZ" -> "sz002730"
 QString toTencentCode(const QString& code);
+
+// 实时行情快照 (腾讯批量接口, 一次请求可查多只)
+struct Quote {
+    bool ok = false;
+    QString code;          // 6 位代码
+    QString name;
+    double price = 0;      // 现价
+    double prev = 0;       // 昨收
+    double open = 0, high = 0, low = 0;
+    double volume = 0;     // 成交量(手)
+    double amount = 0;     // 成交额(库内单位, 亿显示=值/1e6)
+    double turnover = 0;   // 换手率 %
+    double mktcap = 0;     // 总市值(亿)
+    QString date;          // 行情日期 YYYY-MM-DD
+    QString time;          // 行情时间 HH:MM:SS (用于判断行情是否新鲜)
+};
+// 批量拉取实时行情; codes 为 6 位代码列表。失败的代码不会出现在结果里。
+QVector<Quote> fetchQuotes(const QStringList& codes);
