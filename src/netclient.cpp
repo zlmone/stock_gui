@@ -273,7 +273,32 @@ int updateIncremental(const QString& dbPath,
     if (verbose)
         fprintf(stderr, "[update] 快照交易日: %s | 库内最后: %s | 有效快照 %d 只\n",
                 tradeDate.toUtf8().constData(), lastDate.toUtf8().constData(), (int)snaps.size());
-    if (tradeDate <= lastDate) {
+    // 是否"已最新"不能只看 MAX(date): 只要库里有一只票是新日期, 整个市场就会被
+    // 误判为已最新而直接跳过 —— 结果绝大多数股票停留在旧日期, 界面却提示"已是最新"
+    // (用户看到的就是"近10日行情是老的")。这里再看一眼"有多少只票真正拥有该日期",
+    // 占比不到一半就仍按未更新处理。
+    int stockTotal = 0, stockOnLast = 0;
+    if (!lastDate.isEmpty()) {
+        sqlite3_stmt* cst = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM stocks", -1, &cst, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(cst) == SQLITE_ROW) stockTotal = sqlite3_column_int(cst, 0);
+            sqlite3_finalize(cst);
+        }
+        cst = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(DISTINCT code) FROM kline_daily WHERE date=?",
+                               -1, &cst, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(cst, 1, lastDate.toUtf8().constData(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(cst) == SQLITE_ROW) stockOnLast = sqlite3_column_int(cst, 0);
+            sqlite3_finalize(cst);
+        }
+    }
+    const bool marketUpToDate = !lastDate.isEmpty() && tradeDate <= lastDate
+                             && (stockTotal <= 0 || stockOnLast * 2 >= stockTotal);
+    if (verbose)
+        fprintf(stderr, "[update] 库内最后日期 %s 上有 %d/%d 只, 判定已最新=%d\n",
+                lastDate.toUtf8().constData(), stockOnLast, stockTotal, (int)marketUpToDate);
+
+    if (marketUpToDate) {
         // K线已最新: 仍刷新 stocks 元数据(名称/市值/换手), 供表格展示
         if (verbose) fprintf(stderr, "[update] K线已最新, 刷新股票元数据...\n");
         char* e2 = nullptr;
