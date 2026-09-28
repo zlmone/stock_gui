@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QFontMetrics>
 #include <cmath>
 #include <limits>
@@ -56,6 +57,21 @@ KLineChart::KLineChart(QWidget* parent) : QWidget(parent) {
     connect(periodCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &KLineChart::setPeriod);
     hb->addWidget(periodCombo_);
+    hb->addSpacing(6);
+    auto* btnZoomOut = new QPushButton("-", ctrlBar_);
+    btnZoomOut->setFixedSize(28, 18);
+    btnZoomOut->setToolTip(QStringLiteral("缩小: 显示更多K线"));
+    connect(btnZoomOut, &QPushButton::clicked, this, &KLineChart::zoomOut);
+    hb->addWidget(btnZoomOut);
+    zoomLabel_ = new QLabel("1.0x", ctrlBar_);
+    zoomLabel_->setMinimumWidth(40);
+    zoomLabel_->setAlignment(Qt::AlignCenter);
+    hb->addWidget(zoomLabel_);
+    auto* btnZoomIn = new QPushButton("+", ctrlBar_);
+    btnZoomIn->setFixedSize(28, 18);
+    btnZoomIn->setToolTip(QStringLiteral("放大: 显示更少K线, 文字同步变大"));
+    connect(btnZoomIn, &QPushButton::clicked, this, &KLineChart::zoomIn);
+    hb->addWidget(btnZoomIn);
     hb->addStretch();
     ctrlBar_->setStyleSheet(QStringLiteral(
         "QCheckBox{color:#cfd4da;font-size:11px;}"
@@ -66,6 +82,27 @@ KLineChart::KLineChart(QWidget* parent) : QWidget(parent) {
 
 void KLineChart::resizeEvent(QResizeEvent*) {
     if (ctrlBar_) ctrlBar_->setGeometry(0, 0, width(), ctrlBar_->sizeHint().height());
+}
+
+void KLineChart::zoomIn() {
+    int n = (int)bars_.size();
+    if (n < 5) return;
+    showDays_ = std::max(30, std::min((int)std::min(500, n), (int)(showDays_ / 1.25)));
+    update();
+}
+
+void KLineChart::zoomOut() {
+    int n = (int)bars_.size();
+    if (n < 5) return;
+    showDays_ = std::min((int)std::min(500, n), (int)(showDays_ * 1.25));
+    update();
+}
+
+double KLineChart::zoomScale() const {
+    const double zMin = 30.0, zMax = 500.0;
+    double t = (showDays_ - zMin) / (zMax - zMin);
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    return 1.0 + (1.0 - t) * 1.2;
 }
 
 void KLineChart::setSubIndex(int idx) {
@@ -347,7 +384,16 @@ void KLineChart::paintEvent(QPaintEvent*) {
     int start = n - vis;
 
     QRect cr = canvasRect();
-    const int mL = 10, mR = 64, mB = 18, mT = 22;
+    double zs = zoomScale();
+    if (zoomLabel_) zoomLabel_->setText(QString("%1x").arg(zoomScale(), 0, 'f', 1));
+    QFont f(QFont(QStringLiteral("Consolas"), 0));
+    f.setPixelSize(qMax(9, int(9 * zs)));
+    QFontMetrics pf(f);
+    const int mL = 10;
+    const int mR = qMax(70, int(30 * zs) + 30);
+    const int mB = qMax(16, int(15 * zs) + 2);
+    const int mT = qMax(20, int(22 * zs) + 2);
+    const int labelH = qMax(18, int(16 * zs) + 4);
     bool showChips = (cbChips_ && cbChips_->isChecked() && !chips_.empty() && chipHi_ > chipLo_);
     int chipW = showChips ? 150 : 0;
     int chartW = cr.width() - mL - mR - chipW;
@@ -381,14 +427,14 @@ void KLineChart::paintEvent(QPaintEvent*) {
     auto xOf = [&](int k) { return mainR.left() + (k + 0.5) * binW; };
 
     // ---------- 网格 + 价格刻度 ----------
-    p.setFont(QFont(QStringLiteral("Consolas"), 8));
+    p.setFont(f);
     for (int g = 0; g <= 4; g++) {
         double price = lo + (hi - lo) * g / 4.0;
         int y = (int)yOf(price);
         p.setPen(QPen(QColor(0x25, 0x2a, 0x31), 1, Qt::DotLine));
         p.drawLine(mainR.left(), y, mainR.right(), y);
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(mainR.right() + 4, y - 8, mR - 6, 16),
+        p.drawText(QRect(mainR.right() + 4, y - labelH / 2, mR - 6, labelH),
                    Qt::AlignVCenter | Qt::AlignLeft, QString::number(price, 'f', 2));
     }
 
@@ -522,13 +568,13 @@ void KLineChart::paintEvent(QPaintEvent*) {
         drawSubLine(dif_, QColor(0xff, 0xff, 0xff));
         drawSubLine(dea_, QColor(0xff, 0xd5, 0x4f));
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.left(), subR.top() - 3, 260, 14), Qt::AlignLeft,
+        p.drawText(QRect(subR.left(), subR.top() - 3, qMax(260, (int)(260 * zs) + 40), labelH), Qt::AlignLeft,
                    QStringLiteral("MACD(12,26,9)  DIF 白  DEA 黄"));
-        p.drawText(QRect(subR.right() + 4, (int)y0 - 8, mR - 6, 16),
+        p.drawText(QRect(subR.right() + 4, (int)y0 - labelH / 2, mR - 6, labelH),
                    Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("0"));
-        p.drawText(QRect(subR.right() + 4, subR.top(), mR - 6, 14),
+        p.drawText(QRect(subR.right() + 4, subR.top(), mR - 6, labelH),
                    Qt::AlignLeft, QString::number(vmax, 'f', 2));
-        p.drawText(QRect(subR.right() + 4, subR.bottom() - 14, mR - 6, 14),
+        p.drawText(QRect(subR.right() + 4, subR.bottom() - 14, mR - 6, labelH),
                    Qt::AlignLeft, QString::number(-vmax, 'f', 2));
     } else if (sub == 2) {
         // KDJ: 范围 [-20, 120]
@@ -543,7 +589,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         }
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
         for (double lv : {0.0, 50.0, 100.0}) {
-            p.drawText(QRect(subR.right() + 4, (int)yK(lv) - 8, mR - 6, 16),
+            p.drawText(QRect(subR.right() + 4, (int)yK(lv) - labelH / 2, mR - 6, labelH),
                        Qt::AlignLeft | Qt::AlignVCenter, QString::number((int)lv));
         }
         auto drawSubLine = [&](const std::vector<double>& arr, const QColor& c) {
@@ -561,7 +607,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         drawSubLine(d_, QColor(0xff, 0xd5, 0x4f));
         drawSubLine(j_, QColor(0xba, 0x68, 0xc8));
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.left(), subR.top() - 3, 260, 14), Qt::AlignLeft,
+        p.drawText(QRect(subR.left(), subR.top() - 3, qMax(260, (int)(260 * zs) + 40), labelH), Qt::AlignLeft,
                    QStringLiteral("KDJ(9,3,3)  K 白  D 黄  J 紫"));
     } else if (sub == 3) {
         // RSI: 范围 [0, 100]
@@ -573,7 +619,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         }
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
         for (double lv : {30.0, 50.0, 70.0}) {
-            p.drawText(QRect(subR.right() + 4, (int)yR(lv) - 8, mR - 6, 16),
+            p.drawText(QRect(subR.right() + 4, (int)yR(lv) - labelH / 2, mR - 6, labelH),
                        Qt::AlignLeft | Qt::AlignVCenter, QString::number((int)lv));
         }
         auto drawSubLine = [&](const std::vector<double>& arr, const QColor& c) {
@@ -591,7 +637,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         drawSubLine(rsi12_, QColor(0xff, 0xd5, 0x4f));
         drawSubLine(rsi24_, QColor(0xba, 0x68, 0xc8));
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.left(), subR.top() - 3, 280, 14), Qt::AlignLeft,
+        p.drawText(QRect(subR.left(), subR.top() - 3, qMax(280, (int)(280 * zs) + 40), labelH), Qt::AlignLeft,
                    QStringLiteral("RSI(6,12,24)  RSI6 白  RSI12 黄  RSI24 紫"));
     } else if (sub == 4) {
         // WR(14): 0~100, >80 超卖 <20 超买
@@ -603,7 +649,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         }
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
         for (double lv : {20.0, 80.0}) {
-            p.drawText(QRect(subR.right() + 4, (int)yW(lv) - 8, mR - 6, 16),
+            p.drawText(QRect(subR.right() + 4, (int)yW(lv) - labelH / 2, mR - 6, labelH),
                        Qt::AlignLeft | Qt::AlignVCenter, QString::number((int)lv));
         }
         auto drawSubLine = [&](const std::vector<double>& arr, const QColor& c) {
@@ -619,7 +665,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         };
         drawSubLine(wr14_, QColor(0xff, 0xff, 0xff));
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.left(), subR.top() - 3, 280, 14), Qt::AlignLeft,
+        p.drawText(QRect(subR.left(), subR.top() - 3, qMax(280, (int)(280 * zs) + 40), labelH), Qt::AlignLeft,
                    QStringLiteral("WR(14)  上80超卖 下20超买"));
     } else if (sub == 5) {
         // CCI(14): 参考线 ±100
@@ -637,11 +683,11 @@ void KLineChart::paintEvent(QPaintEvent*) {
             p.drawLine(subR.left(), y, subR.right(), y);
         }
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.right() + 4, (int)y0 - 8, mR - 6, 16),
+        p.drawText(QRect(subR.right() + 4, (int)y0 - labelH / 2, mR - 6, labelH),
                    Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("0"));
-        p.drawText(QRect(subR.right() + 4, subR.top(), mR - 6, 14),
+        p.drawText(QRect(subR.right() + 4, subR.top(), mR - 6, labelH),
                    Qt::AlignLeft, QString::number((int)vmax));
-        p.drawText(QRect(subR.right() + 4, subR.bottom() - 14, mR - 6, 14),
+        p.drawText(QRect(subR.right() + 4, subR.bottom() - 14, mR - 6, labelH),
                    Qt::AlignLeft, QString::number((int)-vmax));
         auto drawSubLine = [&](const std::vector<double>& arr, const QColor& c) {
             p.setPen(QPen(c, 1));
@@ -656,7 +702,7 @@ void KLineChart::paintEvent(QPaintEvent*) {
         };
         drawSubLine(cci14_, QColor(0xff, 0xff, 0xff));
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.left(), subR.top() - 3, 300, 14), Qt::AlignLeft,
+        p.drawText(QRect(subR.left(), subR.top() - 3, qMax(300, (int)(300 * zs) + 40), labelH), Qt::AlignLeft,
                    QStringLiteral("CCI(14)  >+100超买  <-100超卖"));
     } else {
         // OBV 能量潮
@@ -684,11 +730,11 @@ void KLineChart::paintEvent(QPaintEvent*) {
             prev = pt; has = true;
         }
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect(subR.left(), subR.top() - 3, 300, 14), Qt::AlignLeft,
+        p.drawText(QRect(subR.left(), subR.top() - 3, qMax(300, (int)(300 * zs) + 40), labelH), Qt::AlignLeft,
                    QStringLiteral("OBV 能量潮 (涨日累加/跌日累减)"));
-        p.drawText(QRect(subR.right() + 4, subR.top(), mR - 6, 14),
+        p.drawText(QRect(subR.right() + 4, subR.top(), mR - 6, labelH),
                    Qt::AlignLeft, QString("%1万").arg(hi2 / 1e4, 0, 'f', 0));
-        p.drawText(QRect(subR.right() + 4, subR.bottom() - 14, mR - 6, 14),
+        p.drawText(QRect(subR.right() + 4, subR.bottom() - 14, mR - 6, labelH),
                    Qt::AlignLeft, QString("%1万").arg(lo2 / 1e4, 0, 'f', 0));
     }
 
@@ -698,7 +744,8 @@ void KLineChart::paintEvent(QPaintEvent*) {
         int i = start + k;
         QString d = QString::fromStdString(bars_[i].date).mid(5);
         p.setPen(QColor(0x9a, 0xa0, 0xa8));
-        p.drawText(QRect((int)xOf(k) - 30, mainR.bottom() + 2, 60, 14), Qt::AlignCenter, d);
+        int twi = qMax(60, (int)(60 * zs) + 16);
+        p.drawText(QRect((int)xOf(k) - twi / 2, mainR.bottom() + 2, twi, labelH), Qt::AlignCenter, d);
     }
 
     // ---------- 标题 + 图例 ----------
@@ -758,10 +805,11 @@ void KLineChart::paintEvent(QPaintEvent*) {
             info += QString("   CCI %1").arg(cci14_[i], 0, 'f', 1);
         else if (sub == 6 && i < (int)obv_.size())
             info += QString("   OBV %1万").arg(obv_[i] / 1e4, 0, 'f', 0);
+        p.setFont(f);
         QFontMetrics fm(p.font());
         int tw = fm.horizontalAdvance(info) + 12;
         if (tw > mainR.width() - 12) tw = mainR.width() - 12;
-        QRect box(mainR.left() + 6, mainR.top() + 6, tw, 20);
+        QRect box(mainR.left() + 6, mainR.top() + 6, tw, qMax(20, int(16 * zs) + 4));
         p.fillRect(box, QColor(0x20, 0x24, 0x2b, 235));
         p.setPen(QColor(0xe8, 0xe8, 0xe8));
         p.drawText(box.adjusted(6, 0, 0, 0), Qt::AlignVCenter | Qt::AlignLeft, info);

@@ -9,6 +9,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QLabel;
 
 class KLineChart : public QWidget {
     Q_OBJECT
@@ -20,6 +21,8 @@ public:
     void setBollOn(bool on);         // BOLL 叠加开关
     void setPeriod(int p);           // 周期: 0=日K 1=周K 2=月K
     void setChipsOn(bool on);        // 筹码分布图开关
+    void zoomIn();         // 放大: 显示更少K线(文字同步变大)
+    void zoomOut();        // 缩小: 显示更多K线
 
 protected:
     void paintEvent(QPaintEvent* e) override;
@@ -49,6 +52,8 @@ private:
     double chipLo_ = 0, chipHi_ = 0, chipProfit_ = -1;
     double chipConc70_ = -1, chipConc90_ = -1;
     int period_ = 0;                 // 0=日 1=周 2=月
+    QLabel* zoomLabel_ = nullptr;    // 缩放倍数读条
+    double zoomScale() const;      // 当前缩放比例 (>=1)
     int showDays_ = 120;
     int hoverIdx_ = -1;
 
